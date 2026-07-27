@@ -13,6 +13,7 @@
 #include <HalDisplay.h>
 #include <ImageRender.h>
 #include <SDCardManager.h>
+#include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
 #include <time.h>
 
@@ -62,29 +63,12 @@ static std::string chapterTitleForSpine(const Epub* epub, int spineIndex) {
 }  // namespace
 
 namespace {
-constexpr unsigned long skipChapterMs = 700;
 constexpr unsigned long goHomeMs = 1000;
-constexpr int statusBarMargin = 19;
+constexpr int statusBarMargin = 5;
+constexpr int statusBarFullGap = 10;
 constexpr int progressBarMarginTop = 10;
 constexpr unsigned long bookmarkHoldMs = 1000;
 constexpr bool kReaderHighQualityFastLut = true;
-
-/**
- * MAP_NONE adds L/R to Up/Down for paging. In landscape CCW, physical left = next page and right = previous;
- * in landscape CW (and portrait), left = previous and right = next.
- */
-void addMapNoneLandscapeLeftRightForPageTurn(const GfxRenderer::Orientation orientation,
-                                             const MappedInputManager& mappedInput, bool& prev, bool& next) {
-  const bool leftReleased = mappedInput.wasReleased(MappedInputManager::Button::Left);
-  const bool rightReleased = mappedInput.wasReleased(MappedInputManager::Button::Right);
-  if (orientation == GfxRenderer::Orientation::LandscapeCounterClockwise) {
-    if (!prev) prev = rightReleased;
-    if (!next) next = leftReleased;
-  } else {
-    if (!prev) prev = leftReleased;
-    if (!next) next = rightReleased;
-  }
-}
 
 bool pageImageFootprintAtLeastHalfScreen(const Page& page, const GfxRenderer& renderer, int marginLeft, int marginTop) {
   if (!page.hasImages()) {
@@ -149,23 +133,32 @@ ViewportInfo EpubActivity::calculateViewport() {
   int oT, oR, oB, oL;
   renderer.getOrientedViewableTRBL(&oT, &oR, &oB, &oL);
 
+  bool hasStatusBar = (READER_SETTINGS.statusBarLeft != SystemSetting::STATUS_ITEM_NONE ||
+                       READER_SETTINGS.statusBarMiddle != SystemSetting::STATUS_ITEM_NONE ||
+                       READER_SETTINGS.statusBarRight != SystemSetting::STATUS_ITEM_NONE);
+
   info.totalMarginTop = oT + bookSettings.screenMargin;
-  info.totalMarginBottom = oB + bookSettings.screenMargin;
+  info.totalMarginBottom = oB + (hasStatusBar ? bookSettings.screenMargin : 0);
   info.totalMarginLeft = oL + bookSettings.screenMargin;
   info.totalMarginRight = oR + bookSettings.screenMargin;
 
-  bool hasStatusBar = (bookSettings.statusBarLeft.item != StatusBarItem::NONE ||
-                       bookSettings.statusBarMiddle.item != StatusBarItem::NONE ||
-                       bookSettings.statusBarRight.item != StatusBarItem::NONE);
-
-  bool showProgressBar = (bookSettings.statusBarMiddle.item == StatusBarItem::PROGRESS_BAR ||
-                          bookSettings.statusBarMiddle.item == StatusBarItem::PROGRESS_BAR_WITH_PERCENT);
+  bool showProgressBar = (READER_SETTINGS.statusBarMiddle == SystemSetting::STATUS_ITEM_PROGRESS_BAR ||
+                          READER_SETTINGS.statusBarMiddle == SystemSetting::STATUS_ITEM_PROGRESS_BAR_WITH_PERCENT);
 
   if (hasStatusBar) {
     info.totalMarginBottom +=
         statusBarMargin - bookSettings.screenMargin +
         (showProgressBar ? (ScreenComponents::BOOK_PROGRESS_BAR_HEIGHT + progressBarMarginTop) : 0);
   }
+
+  const int fullBarHeight = StatusBar::reservedFullBarHeight();
+  if (hasStatusBar && fullBarHeight > 0) {
+    info.totalMarginBottom += statusBarFullGap;
+  }
+
+  // Full is a second bar stacked below the main one, so its height is always additive rather than
+  // replacing anything - see StatusBar::render() for how the two bands stack.
+  info.totalMarginBottom += fullBarHeight;
 
   info.fontId = bookSettings.getReaderFontId();
   // Each line's baseline is (top + ascender), so the first line's cap top sits (ascender - capHeight)
@@ -383,13 +376,29 @@ void EpubActivity::setupOrientation() {
   mappedInput.setInvertDirectionalAxes180(renderer.getOrientation() == GfxRenderer::Orientation::LandscapeClockwise);
 }
 
-void EpubActivity::syncOrientationFromGlobalIfNeeded() {
-  if (!bookSettings.useCustomSettings) {
-    const SystemSetting& g = SystemSetting::getInstance();
-    bookSettings.orientation = g.orientation;
-    bookSettings.paragraphCssIndentEnabled = g.paragraphCssIndentEnabled;
+bool EpubActivity::syncSettingsFromGlobalIfNeeded() {
+  if (bookSettings.useCustomSettings) {
+    return false;
   }
+
+  const BookSettings before = bookSettings;
+  bookSettings.loadFromGlobalSettings();
+  bookSettings.useCustomSettings = false;
+  return bookSettings != before;
 }
+
+uint32_t EpubActivity::currentStatusBarLayoutSignature() const {
+  return static_cast<uint32_t>(READER_SETTINGS.statusBarLeft) |
+         (static_cast<uint32_t>(READER_SETTINGS.statusBarMiddle) << 8) |
+         (static_cast<uint32_t>(READER_SETTINGS.statusBarRight) << 16) |
+         (static_cast<uint32_t>(READER_SETTINGS.statusBarFullStyle) << 24);
+}
+
+bool EpubActivity::statusBarLayoutChangedSinceApplied() const {
+  return currentStatusBarLayoutSignature() != statusBarLayoutAppliedSignature_;
+}
+
+void EpubActivity::markStatusBarLayoutApplied() { statusBarLayoutAppliedSignature_ = currentStatusBarLayoutSignature(); }
 
 void EpubActivity::onBookSettingsLiveLayoutSync() {
   if (settingsDrawer) {
@@ -581,7 +590,7 @@ void EpubActivity::fastPath() {
   }
 
   loadCurrentSection();
-  statusBar = std::unique_ptr<StatusBar>(new StatusBar(renderer, *epub, bookSettings));
+  statusBar = std::unique_ptr<StatusBar>(new StatusBar(renderer, *epub, bookSettings, &readingStats_));
 }
 
 /**
@@ -611,7 +620,7 @@ bool EpubActivity::slowPath() {
   loadingProgress = 100;
   drawLoadingScreen();
 
-  statusBar = std::unique_ptr<StatusBar>(new StatusBar(renderer, *epub, bookSettings));
+  statusBar = std::unique_ptr<StatusBar>(new StatusBar(renderer, *epub, bookSettings, &readingStats_));
   renderer.clearScreen(0xff);
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   if (!section) {
@@ -627,16 +636,19 @@ bool EpubActivity::slowPath() {
  */
 void EpubActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
+  Serial.printf("[%lu] [MEM] Free heap at EpubActivity::onEnter() (book open, dictionary untouched): %u bytes\n",
+               millis(), static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)));
   epub->setupCacheDir();
 
-  syncOrientationFromGlobalIfNeeded();
+  syncSettingsFromGlobalIfNeeded();
   setupOrientation();
 
   bookProgress.reset(new BookProgress(epub->getCachePath()));
 
-  const auto* book = BOOK_STATE.findBookByPath(epub->getPath());
+  BookState::Book bookState;
+  const bool isTracked = BOOK_STATE.findBook(epub->getPath(), bookState);
   bool hasProgress = bookProgress->exists();
-  const bool useFastPath = (epub->isLoaded() || epub->hasMetadataCache()) && book && hasProgress;
+  const bool useFastPath = (epub->isLoaded() || epub->hasMetadataCache()) && isTracked && hasProgress;
 
   if (!useFastPath) {
     renderer.clearScreen(0xff);
@@ -659,6 +671,7 @@ void EpubActivity::onEnter() {
   updateRequired = true;
   lastAutoPageTurnTime = millis();
   bookLayoutAppliedOrientation_ = bookSettings.orientation;
+  markStatusBarLayoutApplied();
 
   lastGoodSpineIndex_ = currentSpineIndex;
   lastGoodPageNumber_ = nextPageNumber;
@@ -742,25 +755,28 @@ void EpubActivity::loop() {
     return;
   }
 
-  if (menuDrawerVisible && menuDrawer && !menuDrawer->isDismissed()) {
-    menuDrawer->handleInput(mappedInput);
+  if (dictUi_.isActive()) {
+    dictUi_.handleInput(*this);
+    if (updateRequired && dictUi_.isActive()) {
+      updateRequired = false;
+      dictUi_.repaint(*this);
+    } else if (updateRequired) {
+      updateRequired = false;
+      renderScreen(true);
+    }
     return;
   }
 
-  MappedInputManager::Button menuBtn;
-  switch (SETTINGS.readerMenuButton) {
-    case SystemSetting::READER_MENU_BUTTON::MENU_DOWN:
-      menuBtn = MappedInputManager::Button::Down;
-      break;
-    case SystemSetting::READER_MENU_BUTTON::MENU_LEFT:
-      menuBtn = MappedInputManager::Button::Left;
-      break;
-    case SystemSetting::READER_MENU_BUTTON::MENU_RIGHT:
-      menuBtn = MappedInputManager::Button::Right;
-      break;
-    default:
-      menuBtn = MappedInputManager::Button::Up;
-      break;
+  if (orientationPicker_.isActive()) {
+    orientationPicker_.handleInput(*this);
+    // handleInput() already repaints inline (popup redraw on Up/Down, renderScreen(true) on Back) -
+    // Confirm instead sets isToggleClosed so the block below performs the actual relayout next loop().
+    return;
+  }
+
+  if (menuDrawerVisible && menuDrawer && !menuDrawer->isDismissed()) {
+    menuDrawer->handleInput(mappedInput);
+    return;
   }
 
   if (settingsDrawerVisible && settingsDrawer) {
@@ -779,8 +795,9 @@ void EpubActivity::loop() {
 
   if (isToggleClosed) {
     isToggleClosed = false;
-    syncOrientationFromGlobalIfNeeded();
-    const bool layoutNeedsRebuild = (settingsDrawer && settingsDrawer->shouldUpdate()) ||
+    const bool inheritedSettingsChanged = syncSettingsFromGlobalIfNeeded();
+    const bool layoutNeedsRebuild = inheritedSettingsChanged || statusBarLayoutChangedSinceApplied() ||
+                                    (settingsDrawer && settingsDrawer->shouldUpdate()) ||
                                     (bookSettings.orientation != bookLayoutAppliedOrientation_);
     if (layoutNeedsRebuild) {
       applyBookSettings();
@@ -804,116 +821,21 @@ void EpubActivity::loop() {
 
   if (section && epub && !menuDrawerVisible && !settingsDrawerVisible) {
     annUi_.tryChordEnter(*this);
+    dictUi_.tryChordEnter(*this);
   }
 
-  if (mappedInput.isPressed(menuBtn) && mappedInput.getHeldTime() >= 500) {
-    pauseReadingStats();
-    toggleSettingsDrawer();
+  // Up/Down/Left/Right dispatch (page turn, open settings/menu, annotate, dictionary, refresh,
+  // chapter skip, bookmark, go home) is fully owned by ReaderButtonBindings now - see that class for
+  // the short/long-press-per-button mapping this supersedes.
+  if (btnBindings_.handleInput(*this)) {
     return;
   }
 
-  bool prev = false;
-  bool next = false;
-
-  if (!mappedInput.isPressed(menuBtn)) {
-    if (SETTINGS.readerDirectionMapping == SystemSetting::READER_DIRECTION_MAPPING::MAP_NONE) {
-      prev = mappedInput.wasReleased(MappedInputManager::Button::Up);
-      next = mappedInput.wasReleased(MappedInputManager::Button::Down);
-
-      addMapNoneLandscapeLeftRightForPageTurn(renderer.getOrientation(), mappedInput, prev, next);
-
-    } else {
-      switch (SETTINGS.readerDirectionMapping) {
-        case SystemSetting::READER_DIRECTION_MAPPING::MAP_RIGHT_LEFT:
-          prev = mappedInput.wasReleased(MappedInputManager::Button::Right);
-          next = mappedInput.wasReleased(MappedInputManager::Button::Left);
-          break;
-
-        case SystemSetting::READER_DIRECTION_MAPPING::MAP_UP_DOWN:
-          prev = mappedInput.wasReleased(MappedInputManager::Button::Up);
-          next = mappedInput.wasReleased(MappedInputManager::Button::Down);
-          break;
-
-        case SystemSetting::READER_DIRECTION_MAPPING::MAP_DOWN_UP:
-          prev = mappedInput.wasReleased(MappedInputManager::Button::Down);
-          next = mappedInput.wasReleased(MappedInputManager::Button::Up);
-          break;
-
-        default:
-          prev = mappedInput.wasReleased(MappedInputManager::Button::Left);
-          next = mappedInput.wasReleased(MappedInputManager::Button::Right);
-          break;
-      }
-    }
-  }
-
-  const uint8_t longPressMode = bookSettings.longPressChapterSkip;
-  const bool longPressActive =
-      (longPressMode != SystemSetting::LONG_PRESS_OFF) && (mappedInput.getHeldTime() >= skipChapterMs);
-
-  if (longPressActive && (prev || next)) {
-    endPageTimer();
-
-    if (longPressMode == SystemSetting::LONG_PRESS_PAGE_SKIP_5) {
-      for (int i = 0; i < 5; ++i) {
-        if (next) {
-          pageTurn(true);
-        } else {
-          pageTurn(false);
-        }
-      }
-      startPageTimer();
-      lastAutoPageTurnTime = millis();
-      updateRequired = true;
-      return;
-    }
-
-    if (longPressMode == SystemSetting::LONG_PRESS_CHAPTER_SKIP) {
-      bool spineAdvanced = false;
-      if (next) {
-        if (currentSpineIndex < epub->getSpineItemsCount() - 1) {
-          currentSpineIndex++;
-          nextPageNumber = 0;
-          section.reset();
-          spineAdvanced = true;
-        }
-      } else if (prev) {
-        if (currentSpineIndex > 0) {
-          currentSpineIndex--;
-          nextPageNumber = 0;
-          section.reset();
-          spineAdvanced = true;
-        }
-      }
-
-      if (spineAdvanced) {
-        startPageTimer();
-        lastAutoPageTurnTime = millis();
-        updateRequired = true;
-        return;
-      }
-    }
-  }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
-      SETTINGS.readerShortPwrBtn == SystemSetting::READER_SHORT_PWRBTN::READER_PAGE_TURN) {
-    endPageTimer();
-    pageTurn(true);
-    lastAutoPageTurnTime = millis();
-    return;
-  }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
-      SETTINGS.readerShortPwrBtn == SystemSetting::READER_SHORT_PWRBTN::READER_PAGE_REFRESH) {
-    renderer.displayBuffer(HalDisplay::MANUAL_REFRESH);
-    updateRequired = true;
-    return;
-  }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
-      SETTINGS.readerShortPwrBtn == SystemSetting::READER_SHORT_PWRBTN::READER_ANNOTATE) {
-    pauseReadingStats();
-    annUi_.enter(*this);
+  // Power (short-press only, no long-press pairing) shares the same 12-option READER_BUTTON_ACTION
+  // dispatch as Up/Down/Left/Right - see READER_SETTINGS.btnPowerShortAction's doc comment for why this
+  // supersedes the old 4-option readerShortPwrBtn.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Power)) {
+    btnBindings_.dispatch(*this, READER_SETTINGS.btnPowerShortAction);
     return;
   }
 
@@ -926,27 +848,13 @@ void EpubActivity::loop() {
     return;
   }
 
-  if (prev) {
-    endPageTimer();
-    pageTurn(false);
-    lastAutoPageTurnTime = millis();
-    return;
-  }
-
-  if (next) {
-    endPageTimer();
-    pageTurn(true);
-    lastAutoPageTurnTime = millis();
-    return;
-  }
-
-  if (bookSettings.pageAutoTurnSeconds > 0 && !menuDrawerVisible && !settingsDrawerVisible) {
+  if (READER_SETTINGS.pageAutoTurnSeconds > 0 && !menuDrawerVisible && !settingsDrawerVisible) {
     if (lastAutoPageTurnTime == 0) {
       lastAutoPageTurnTime = millis();
     }
 
     unsigned long elapsed = millis() - lastAutoPageTurnTime;
-    if (elapsed >= (bookSettings.pageAutoTurnSeconds * 1000UL)) {
+    if (elapsed >= (READER_SETTINGS.pageAutoTurnSeconds * 1000UL)) {
       lastAutoPageTurnTime = millis();
       endPageTimer();
       pageTurn(true);
@@ -1031,9 +939,9 @@ void EpubActivity::goToAnnotationPage(int spine, int page) {
 }
 
 /**
- * @brief Toggles the menu drawer visibility
+ * @brief Lazily constructs and wires up menuDrawer, without changing its visibility.
  */
-void EpubActivity::toggleMenuDrawer() {
+void EpubActivity::ensureMenuDrawer() {
   if (!menuDrawer) {
     menuDrawer = new MenuDrawer(
         renderer,
@@ -1042,6 +950,14 @@ void EpubActivity::toggleMenuDrawer() {
             case MenuDrawer::MenuAction::SHOW_BOOKMARKS:
               break;
             case MenuDrawer::MenuAction::SHOW_ANNOTATIONS:
+              break;
+            case MenuDrawer::MenuAction::ENTER_DICTIONARY:
+              // The menu drawer was just hide()-n above, but that only flips its own visibility flag -
+              // the framebuffer still has its pixels in it until something repaints. dictUi_.enter()
+              // captures whatever's in the framebuffer right now as its backdrop, so without this the
+              // dictionary UI would draw its word-highlight overlay on top of the menu still showing.
+              renderScreen(true);
+              dictUi_.enter(*this);
               break;
             case MenuDrawer::MenuAction::SELECT_CHAPTER:
               break;
@@ -1165,6 +1081,13 @@ void EpubActivity::toggleMenuDrawer() {
       menuDrawer->setPercentSelectedCallback([this](const int percent) { onPercentDrawerSelected(percent); });
     }
   }
+}
+
+/**
+ * @brief Toggles the menu drawer visibility
+ */
+void EpubActivity::toggleMenuDrawer() {
+  ensureMenuDrawer();
 
   menuDrawerVisible = !menuDrawerVisible;
 
@@ -1180,6 +1103,22 @@ void EpubActivity::toggleMenuDrawer() {
 }
 
 /**
+ * @brief Opens the menu drawer directly to its Table of Contents view, skipping the main menu list.
+ */
+void EpubActivity::openTableOfContents() {
+  ensureMenuDrawer();
+
+  if (!menuDrawerVisible) {
+    pauseReadingStats();
+    menuDrawer->setReaderSpineIndex(currentSpineIndex);
+    menuDrawer->setBookTitle(epub->getTitle());
+    menuDrawer->show();
+    menuDrawerVisible = true;
+  }
+  menuDrawer->showToc();
+}
+
+/**
  * @brief Toggles the settings drawer visibility
  */
 void EpubActivity::toggleSettingsDrawer() {
@@ -1192,7 +1131,7 @@ void EpubActivity::toggleSettingsDrawer() {
 
   if (settingsDrawerVisible) {
     pauseReadingStats();
-    syncOrientationFromGlobalIfNeeded();
+    syncSettingsFromGlobalIfNeeded();
     settingsDrawerSnapshot_ = bookSettings;
     hasSettingsDrawerSnapshot_ = true;
 
@@ -1402,8 +1341,8 @@ void EpubActivity::prewarmCurrentSectionImages() {
 
   const ViewportInfo info = calculateViewport();
   const ImageRenderMode imageMode =
-      bookSettings.readerImageGrayscale != 0 ? ImageRenderMode::TwoBit : ImageRenderMode::OneBit;
-  const bool imageQuality = bookSettings.readerImageGrayscale == SystemSetting::READER_IMAGE_HIGH;
+      READER_SETTINGS.readerImageGrayscale != 0 ? ImageRenderMode::TwoBit : ImageRenderMode::OneBit;
+  const bool imageQuality = READER_SETTINGS.readerImageGrayscale == SystemSetting::READER_IMAGE_HIGH;
 
   const int savedPage = section->currentPage;
   int warmedImages = 0;
@@ -1793,17 +1732,17 @@ void EpubActivity::renderContents(std::unique_ptr<Page> page, const int oriented
     }
   }
 
-  const bool textAa = bookSettings.textAntiAliasing != 0 && renderer.text.supportsAntiAliasing(fontId);
+  const bool textAa = READER_SETTINGS.textAntiAliasing != 0 && renderer.text.supportsAntiAliasing(fontId);
 
   // Medium is the explicit grayscale mode: run its grayscale refresh for image pages. High stays selective so
   // line-art/comic images can use the sharper 2-bit quantizer without paying for the quality grayscale pass. If
   // text AA already needs a medium grayscale pass, include those non-quality High images in the same pass.
-  const bool readerImageTwoBit = bookSettings.readerImageGrayscale != 0 && pageHasImages;
-  const bool highImageMode = bookSettings.readerImageGrayscale == SystemSetting::READER_IMAGE_HIGH && pageHasImages;
+  const bool readerImageTwoBit = READER_SETTINGS.readerImageGrayscale != 0 && pageHasImages;
+  const bool highImageMode = READER_SETTINGS.readerImageGrayscale == SystemSetting::READER_IMAGE_HIGH && pageHasImages;
   const bool pngMediumOnly = highImageMode && page->anyPngImage();
   const bool highQuality = highImageMode && page->anyImageNeedsGrayscale() && !pngMediumOnly;
   const bool mediumImageGrayscale =
-      (bookSettings.readerImageGrayscale == SystemSetting::READER_IMAGE_MEDIUM && pageHasImages) || pngMediumOnly ||
+      (READER_SETTINGS.readerImageGrayscale == SystemSetting::READER_IMAGE_MEDIUM && pageHasImages) || pngMediumOnly ||
       (highImageMode && !highQuality && textAa);
   const bool needsImageGrayscale = mediumImageGrayscale || highQuality;
   const ImageRenderMode imageMode = readerImageTwoBit ? ImageRenderMode::TwoBit : ImageRenderMode::OneBit;
@@ -1814,12 +1753,17 @@ void EpubActivity::renderContents(std::unique_ptr<Page> page, const int oriented
 
   const bool needsTextAntiAliasPass = textAa;
 
-  const bool smartImageRefreshEnabled = bookSettings.readerSmartRefreshOnImages && !isBookmarking && !annUi_.isActive();
+  const bool smartImageRefreshEnabled = READER_SETTINGS.readerSmartRefreshOnImages && !isBookmarking && !annUi_.isActive();
   const bool smartRefreshAfterLargeImage = lastPageHadImages && lastPageHadLargeImage;
 
-  const bool skipImagesInPageRender = needsImageGrayscale && highQuality;
+  // Default (non-grayscale) reading mode: draw and push the text/status bar first, then draw the page's
+  // images and push a second refresh - so a not-yet-cached image's decode doesn't delay the rest of the
+  // page. skipImagesInPageRender already covers the "high quality" grayscale case (images drawn in a
+  // separate pass below); fold this case into it so page->render() skips images here too.
+  const bool deferOneBitImageRender = imageMode == ImageRenderMode::OneBit && pageHasImages && !needsImageGrayscale && pageHasLargeImage;
+  const bool skipImagesInPageRender = (needsImageGrayscale && highQuality) || deferOneBitImageRender;
   page->render(renderer, fontId, headerFontId, orientedMarginLeft, orientedMarginTop, skipImagesInPageRender, imageMode,
-               /*skipOnlyGrayscaleImages=*/highQuality);
+               /*skipOnlyGrayscaleImages=*/highQuality && !deferOneBitImageRender);
 
   renderStatusBar(orientedMarginRight, orientedMarginBottom, orientedMarginLeft);
   if (isCurrentPageBookmarked()) {
@@ -1840,7 +1784,7 @@ void EpubActivity::renderContents(std::unique_ptr<Page> page, const int oriented
   auto displayPageBuffer = [this, smartRefreshThisPageAfterLargeImage]() {
     if (smartRefreshThisPageAfterLargeImage || pagesUntilFullRefresh <= 1) {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-      pagesUntilFullRefresh = bookSettings.refreshFrequency;
+      pagesUntilFullRefresh = READER_SETTINGS.getRefreshFrequency();
     } else {
       renderer.displayBuffer();
       pagesUntilFullRefresh--;
@@ -1857,7 +1801,7 @@ void EpubActivity::renderContents(std::unique_ptr<Page> page, const int oriented
   if (!displayWithQualityPass || !highQualityCacheReady) {
     displayPageBuffer();
   } else if (pagesUntilFullRefresh <= 1) {
-    pagesUntilFullRefresh = bookSettings.refreshFrequency;
+    pagesUntilFullRefresh = READER_SETTINGS.getRefreshFrequency();
   } else {
     pagesUntilFullRefresh--;
   }
@@ -1905,11 +1849,21 @@ void EpubActivity::renderContents(std::unique_ptr<Page> page, const int oriented
     renderer.restoreBwBuffer();
   }
 
+  if (deferOneBitImageRender) {
+    // Text is already on screen (pushed above); draw the images now (decoding/caching them if this is
+    // the first time) and push a quick partial refresh so they pop in without having delayed the text.
+    page->fillImageRects(renderer, orientedMarginLeft - 2, orientedMarginTop - 2, false, /*onlyGrayscale=*/true);
+    page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop, imageMode);
+    renderer.displayBuffer();
+  }
+
   lastPageHadImages = pageHasImages;
   lastPageHadLargeImage = pageHasLargeImage;
 
   if (annUi_.isActive()) {
     annUi_.drawUiOverlay(*this);
+  } else if (dictUi_.isActive()) {
+    dictUi_.drawUiOverlay(*this);
   } else if (!annUi_.storedRanges().empty()) {
     annUi_.drawStoredOverlay(*this);
   } else if (highQuality && bwStored) {
@@ -2136,8 +2090,10 @@ void EpubActivity::loadBookSettings() {
     if (!loaded) {
       bookSettings.loadFromGlobalSettings();
       bookSettings.useCustomSettings = false;
+    } else {
+      syncSettingsFromGlobalIfNeeded();
     }
-    pagesUntilFullRefresh = bookSettings.refreshFrequency;
+    pagesUntilFullRefresh = READER_SETTINGS.getRefreshFrequency();
   }
 }
 
@@ -2176,7 +2132,7 @@ void EpubActivity::applyBookSettings() {
     return;
   }
 
-  syncOrientationFromGlobalIfNeeded();
+  syncSettingsFromGlobalIfNeeded();
   setupOrientation();
 
   bookSettings.normalize();
@@ -2222,6 +2178,7 @@ void EpubActivity::applyBookSettings() {
     section.reset();
 
     bookLayoutAppliedOrientation_ = bookSettings.orientation;
+    markStatusBarLayoutApplied();
     suppressNextSectionLoadProgress_ = true;
     hasSettingsDrawerSnapshot_ = false;
     saveBookSettings();
@@ -2236,6 +2193,7 @@ void EpubActivity::applyBookSettings() {
   section.reset();
 
   bookLayoutAppliedOrientation_ = bookSettings.orientation;
+  markStatusBarLayoutApplied();
   suppressNextSectionLoadProgress_ = true;
   hasSettingsDrawerSnapshot_ = false;
   updateRequired = true;

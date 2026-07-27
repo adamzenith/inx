@@ -12,6 +12,11 @@
 
 extern HalGPIO gpio;
 
+// Out-of-class definition for the in-class static constexpr array declaration in StatusBar.h -
+// implicitly inline under C++17 (so this is redundant on most toolchains), but the ESP32 GCC 8.4.0
+// cross-compiler still needs it to avoid an "undefined reference" at link time.
+constexpr StatusBarItem StatusBar::kFullBarStyles[4];
+
 static const int STATUS_BAR_LEFT = 0;
 static const int STATUS_BAR_MIDDLE = 1;
 static const int STATUS_BAR_RIGHT = 2;
@@ -22,11 +27,25 @@ static const int STATUS_BAR_RIGHT = 2;
  * @param epub Reference to the EPUB document
  * @param settings Reference to the book settings
  */
-StatusBar::StatusBar(GfxRenderer& renderer, const Epub& epub, const BookSettings& settings)
-    : m_renderer(renderer), m_epub(epub), m_settings(settings), m_visible(true) {}
+StatusBar::StatusBar(GfxRenderer& renderer, const Epub& epub, const BookSettings& settings,
+                     const EpubReadingStats* readingStats)
+    : m_renderer(renderer), m_epub(epub), m_settings(settings), m_readingStats(readingStats), m_visible(true) {}
+
+bool StatusBar::hasFullBarContent() {
+  return static_cast<StatusBarItem>(READER_SETTINGS.statusBarFullStyle) != StatusBarItem::NONE;
+}
+
+int StatusBar::reservedFullBarHeight() {
+  if (!hasFullBarContent()) {
+    return 0;
+  }
+  constexpr int kFullBarHeight = 12;
+  return kFullBarHeight;
+}
 
 /**
- * @brief Renders the complete status bar with three configurable sections
+ * @brief Renders the complete status bar with three configurable sections, plus the Full bar below
+ * it if it has content.
  * @param section Current section being read
  * @param currentSpineIndex Current spine index
  * @param orientedMarginRight Right margin
@@ -41,28 +60,86 @@ void StatusBar::render(const Section* section, int currentSpineIndex, int orient
 
   const int screenHeight = m_renderer.getScreenHeight();
   const int screenWidth = m_renderer.getScreenWidth();
-  const int textY = screenHeight - orientedMarginBottom - 4;
+  const int fullHeight = reservedFullBarHeight();
+  const int textY = fullHeight > 0 ? screenHeight - orientedMarginBottom - 4
+                                   : screenHeight - m_renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_8_FONT_ID) - 5;
 
   const int availableWidth = screenWidth - orientedMarginLeft - orientedMarginRight;
-  const int sectionWidth = availableWidth / 3;
+  const int positions[] = {STATUS_BAR_LEFT, STATUS_BAR_MIDDLE, STATUS_BAR_RIGHT};
+  int activePositions[3];
+  int activeCount = 0;
 
-  const int leftSectionStart = orientedMarginLeft;
-  const int leftSectionCenter = leftSectionStart + (sectionWidth / 2);
+  for (const int position : positions) {
+    if (getConfig(position).item != StatusBarItem::NONE) {
+      activePositions[activeCount++] = position;
+    }
+  }
 
-  const int middleThirdStart = orientedMarginLeft + sectionWidth;
-  const int middleSectionCenter = middleThirdStart + (sectionWidth / 2);
+  for (int index = 0; index < activeCount; ++index) {
+    const int sectionStart = orientedMarginLeft + (availableWidth * index) / activeCount;
+    const int sectionEnd = orientedMarginLeft + (availableWidth * (index + 1)) / activeCount;
+    const int sectionWidth = sectionEnd - sectionStart;
+    const int sectionCenter = sectionStart + (sectionWidth / 2);
+    renderSection(activePositions[index], sectionStart, sectionCenter, sectionWidth, textY, section, currentSpineIndex);
+  }
 
-  const int rightThirdStart = middleThirdStart + sectionWidth;
-  const int rightSectionCenter = rightThirdStart + (sectionWidth / 2);
-  const int rightSectionStart = rightThirdStart;
+  if (fullHeight > 0) {
+    renderFullBar(fullHeight, section, currentSpineIndex);
+  }
+}
 
-  renderSection(STATUS_BAR_LEFT, leftSectionStart, leftSectionCenter, sectionWidth, textY, section, currentSpineIndex);
+/**
+ * @brief Renders the Full bar hugging the very bottom edge of the screen, full edge-to-edge width.
+ */
+void StatusBar::renderFullBar(const int barHeight, const Section* section, const int currentSpineIndex) const {
+  const StatusBarItem style = static_cast<StatusBarItem>(READER_SETTINGS.statusBarFullStyle);
+  if (style == StatusBarItem::NONE) {
+    return;
+  }
 
-  renderSection(STATUS_BAR_MIDDLE, middleThirdStart, middleSectionCenter, sectionWidth, textY, section,
-                currentSpineIndex);
+  const int screenWidth = m_renderer.getScreenWidth();
+  const int screenHeight = m_renderer.getScreenHeight();
+  int oT, oR, oB, oL;
+  m_renderer.getOrientedViewableTRBL(&oT, &oR, &oB, &oL);
+  (void)oT;
 
-  renderSection(STATUS_BAR_RIGHT, rightSectionStart, rightSectionCenter, sectionWidth, textY, section,
-                currentSpineIndex);
+  const int x0 = oL;
+  const int x1 = screenWidth - oR;
+  const int barBottom = screenHeight - oB;  // hugs the panel's bottom edge, not vertically centered in barHeight
+
+  if (style == StatusBarItem::PAGE_BARS) {
+    // renderPageBars() draws barHeight=5 bars at (textY + 10); back-solve textY so the bars
+    // themselves hug the bottom edge instead of floating with padding above it.
+    constexpr int kPageBarsHeight = 5;
+    constexpr int kPageBarsYOffset = 10;
+    const int textY = barBottom - kPageBarsHeight - kPageBarsYOffset;
+    renderPageBars(x0, (x0 + x1) / 2, x1 - x0, textY, section);
+    return;
+  }
+
+  const float bookProgress = calculateBookProgress(section, currentSpineIndex);
+  const bool withPercent = style == StatusBarItem::PROGRESS_BAR_WITH_PERCENT;
+  const std::string percentStr = withPercent ? getPercentString(bookProgress) : std::string();
+  const int percentWidth =
+      withPercent ? m_renderer.text.getWidth(ATKINSON_HYPERLEGIBLE_8_FONT_ID, percentStr.c_str()) : 0;
+
+  constexpr int barThickness = 6;
+  const int barY = barBottom - barThickness;
+  const int barX0 = x0 + 2;
+  const int barX1 = x1 - 2 - (withPercent ? percentWidth + 8 : 0);
+  const int barWidth = std::max(4, barX1 - barX0);
+
+  m_renderer.rectangle.render(barX0, barY, barWidth, barThickness, true);
+  const int fillWidth = static_cast<int>((bookProgress / 100.0f) * (barWidth - 2));
+  if (fillWidth > 0) {
+    m_renderer.rectangle.fill(barX0 + 1, barY + 1, fillWidth, barThickness - 2, true);
+  }
+
+  if (withPercent) {
+    const int lineHeight = m_renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_8_FONT_ID);
+    const int textY = barBottom - lineHeight + barThickness;
+    m_renderer.text.render(ATKINSON_HYPERLEGIBLE_8_FONT_ID, x1 - 2 - percentWidth, textY, percentStr.c_str());
+  }
 }
 
 /**
@@ -233,6 +310,20 @@ void StatusBar::renderSection(int position, int sectionStart, int sectionCenter,
       break;
     }
 
+    case StatusBarItem::TIME_LEFT_CHAPTER: {
+      const std::string timeLeft = m_readingStats ? m_readingStats->chapterTimeLeftString(section) : "-";
+      int xPos = getPositionX(timeLeft.c_str());
+      m_renderer.text.render(ATKINSON_HYPERLEGIBLE_8_FONT_ID, xPos, textY, timeLeft.c_str());
+      break;
+    }
+
+    case StatusBarItem::TIME_LEFT_BOOK: {
+      const std::string timeLeft = m_readingStats ? m_readingStats->bookTimeLeftString() : "-";
+      int xPos = getPositionX(timeLeft.c_str());
+      m_renderer.text.render(ATKINSON_HYPERLEGIBLE_8_FONT_ID, xPos, textY, timeLeft.c_str());
+      break;
+    }
+
     default:
       break;
   }
@@ -293,16 +384,21 @@ void StatusBar::renderPageBars(int sectionStart, int sectionCenter, int sectionW
  * @return Status bar section configuration
  */
 StatusBarSectionConfig StatusBar::getConfig(int position) const {
+  StatusBarSectionConfig cfg;
   switch (position) {
     case STATUS_BAR_LEFT:
-      return m_settings.statusBarLeft;
+      cfg.item = static_cast<StatusBarItem>(READER_SETTINGS.statusBarLeft);
+      break;
     case STATUS_BAR_MIDDLE:
-      return m_settings.statusBarMiddle;
+      cfg.item = static_cast<StatusBarItem>(READER_SETTINGS.statusBarMiddle);
+      break;
     case STATUS_BAR_RIGHT:
-      return m_settings.statusBarRight;
+      cfg.item = static_cast<StatusBarItem>(READER_SETTINGS.statusBarRight);
+      break;
     default:
-      return StatusBarSectionConfig();
+      break;
   }
+  return cfg;
 }
 
 /**

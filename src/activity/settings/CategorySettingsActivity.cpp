@@ -9,6 +9,7 @@
 #include <GfxRenderer.h>
 #include <HardwareSerial.h>
 #include <SDCardManager.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -16,16 +17,14 @@
 #include <iterator>
 #include <string>
 
-#include "../OpdsServerListActivity.h"
 #include "CalibreSettingsActivity.h"
 #include "ClearCacheActivity.h"
 #include "ClockStylePickerActivity.h"
-#include "KOReaderSettingsActivity.h"
-#include "OtaUpdateActivity.h"
 #include "ReaderFontSettingsDraw.h"
 #include "SleepImagePickerActivity.h"
 #include "ThumbnailGeneratorActivity.h"
 #include "TimeSyncActivity.h"
+#include "state/ReaderSetting.h"
 #include "state/SystemSetting.h"
 #include "system/FontManager.h"
 #include "system/Fonts.h"
@@ -63,6 +62,8 @@ void CategorySettingsActivity::taskTrampoline(void* param) {
  */
 void CategorySettingsActivity::onEnter() {
   Activity::onEnter();
+  Serial.printf("[%lu] [MEM] Free heap at CategorySettingsActivity::onEnter(): %u bytes\n", millis(),
+               static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)));
   renderingMutex = xSemaphoreCreateMutex();
 
   halfRefreshOnLoadApplied_ = false;
@@ -72,7 +73,7 @@ void CategorySettingsActivity::onEnter() {
 
   if (categoryName != nullptr && strcmp(categoryName, "Reader") == 0) {
     FontManager::scanSDFonts("/fonts", true);
-    FontManager::clampReaderFontFamilySlot(SETTINGS.fontFamily);
+    FontManager::clampReaderFontFamilySlot(READER_SETTINGS.fontFamily);
   }
 
   setupMenu();
@@ -234,7 +235,7 @@ void CategorySettingsActivity::setupMenu() {
                   }
                 }
                 if (settingPtr->valuePtr == &SystemSetting::recentLibraryMode &&
-                    current == SystemSetting::RECENT_LIST_DEPRECATED) {
+                    (current == SystemSetting::RECENT_LIST_DEPRECATED || current == SystemSetting::RECENT_SIMPLE)) {
                   for (size_t i = 0; i < settingPtr->enumOptionValues.size(); ++i) {
                     if (settingPtr->enumOptionValues[i] == SystemSetting::RECENT_FLOW) {
                       return settingPtr->enumValues[i].c_str();
@@ -260,7 +261,7 @@ void CategorySettingsActivity::setupMenu() {
                   }
                 }
                 if (settingPtr->valuePtr == &SystemSetting::recentLibraryMode &&
-                    current == SystemSetting::RECENT_LIST_DEPRECATED) {
+                    (current == SystemSetting::RECENT_LIST_DEPRECATED || current == SystemSetting::RECENT_SIMPLE)) {
                   for (size_t i = 0; i < settingPtr->enumOptionValues.size(); ++i) {
                     if (settingPtr->enumOptionValues[i] == SystemSetting::RECENT_FLOW) {
                       currentIndex = static_cast<int>(i);
@@ -331,20 +332,6 @@ void CategorySettingsActivity::setupMenu() {
               }
               return;
             }
-            if (strcmp(settingPtr->name, "KOReader Sync") == 0) {
-              exitActivity();
-              enterNewActivity(new KOReaderSettingsActivity(renderer, mappedInput, [this] {
-                exitActivity();
-                updateRequired = true;
-              }));
-            }
-            if (strcmp(settingPtr->name, "OPDS Browser") == 0) {
-              exitActivity();
-              enterNewActivity(new OpdsServerListActivity(renderer, mappedInput, [this] {
-                exitActivity();
-                updateRequired = true;
-              }));
-            }
             if (strcmp(settingPtr->name, "Delete Cache") == 0) {
               exitActivity();
               enterNewActivity(new ClearCacheActivity(renderer, mappedInput, [this] {
@@ -370,13 +357,6 @@ void CategorySettingsActivity::setupMenu() {
             if (strcmp(settingPtr->name, "Sync time via WiFi") == 0 || strcmp(settingPtr->name, "Sync") == 0) {
               exitActivity();
               enterNewActivity(new TimeSyncActivity(renderer, mappedInput, [this] {
-                exitActivity();
-                updateRequired = true;
-              }));
-            }
-            if (strcmp(settingPtr->name, "Check for updates") == 0) {
-              exitActivity();
-              enterNewActivity(new OtaUpdateActivity(renderer, mappedInput, [this] {
                 exitActivity();
                 updateRequired = true;
               }));
@@ -431,7 +411,8 @@ int CategorySettingsActivity::selectedOptionIndex(const MenuEntry& entry) const 
         return static_cast<int>(i);
       }
     }
-    if (entry.valuePtr == &SystemSetting::recentLibraryMode && current == SystemSetting::RECENT_LIST_DEPRECATED) {
+    if (entry.valuePtr == &SystemSetting::recentLibraryMode &&
+        (current == SystemSetting::RECENT_LIST_DEPRECATED || current == SystemSetting::RECENT_SIMPLE)) {
       for (size_t i = 0; i < setting->enumOptionValues.size(); ++i) {
         if (setting->enumOptionValues[i] == SystemSetting::RECENT_FLOW) {
           return static_cast<int>(i);
@@ -819,7 +800,7 @@ void CategorySettingsActivity::renderSelectorOverlay() {
   constexpr int titleFont = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
   constexpr int itemFont = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
   constexpr int rowHeight = UiTheme::DRAWER_LIST_ITEM_HEIGHT - 4;
-  constexpr int headerHeight = UiTheme::DRAWER_HEADER_HEIGHT - 4;
+  const int headerHeight = INX_THEME.drawerHeaderHeight() - 4;
   constexpr int visibleRows = 5;
 
   const int rows = std::min(visibleRows, static_cast<int>(selectorOptions.size()));
@@ -888,7 +869,7 @@ void CategorySettingsActivity::render() {
   renderTabBar(renderer);
 
   const int headerY = mainContentTop();
-  const int headerHeight = TAB_BAR_HEIGHT;
+  const int headerHeight = mainHeaderHeight();
   const int headerTextY = headerY + (headerHeight - renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_12_FONT_ID)) / 2;
 
   renderer.text.render(ATKINSON_HYPERLEGIBLE_12_FONT_ID, 20, headerTextY, categoryName, true, EpdFontFamily::BOLD);
@@ -963,12 +944,12 @@ void CategorySettingsActivity::render() {
     } else if (entry.type == SettingType::ENUM && entry.name && strcmp(entry.name, "Font Family") == 0) {
       const char* val = entry.getValueText();
       if (val && val[0] != '\0') {
-        ReaderFontSettingsDraw::drawFontFamilyRowValue(renderer, SETTINGS.fontFamily, pageWidth - 24, itemY, itemHeight,
+        ReaderFontSettingsDraw::drawFontFamilyRowValue(renderer, READER_SETTINGS.fontFamily, pageWidth - 24, itemY, itemHeight,
                                                        isSelected, val);
       }
     } else if (entry.type == SettingType::ENUM && entry.name && strcmp(entry.name, "Font Size") == 0) {
       const int valueAreaLeft = std::max(textX + 88, pageWidth * 38 / 100);
-      ReaderFontSettingsDraw::drawFontSizeSliderRowValue(renderer, SETTINGS.fontFamily, SETTINGS.fontSize,
+      ReaderFontSettingsDraw::drawFontSizeSliderRowValue(renderer, READER_SETTINGS.fontFamily, READER_SETTINGS.fontSize,
                                                          valueAreaLeft, pageWidth - 24, itemY, itemHeight, isSelected);
     } else {
       const char* val = entry.getValueText();

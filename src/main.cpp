@@ -30,6 +30,7 @@
 #include "activity/system/SleepActivity.h"
 #include "activity/util/FullScreenMessageActivity.h"
 #include "state/OpdsServerStore.h"
+#include "state/ReaderSetting.h"
 #include "state/SystemSetting.h"
 #include "system/FontManager.h"
 #include "system/Fonts.h"
@@ -48,6 +49,7 @@ GfxRenderer renderer(display);
 GfxRenderer& render = renderer;
 
 Activity* currentActivity = nullptr;
+bool sdCardAvailable = false;
 
 unsigned long t1 = 0;
 unsigned long t2 = 0;
@@ -107,16 +109,20 @@ bool isExportedNoteImage(const std::string& path) {
  * @brief Opens the reader activity and returns to the library when closed.
  */
 void openReaderFromCallback(const std::string& path) {
-  if (isExportedNoteImage(path)) {
-    switchTo<ImageViewerActivity>(render, input, path, [path]() {
-      std::string folderPath = path.substr(0, path.find_last_of('/'));
+  // Defensive copy: `path` is typically a reference into the calling activity's own state (e.g.
+  // LibraryActivity's currentPageItems), but switchTo() deletes that activity before this function's
+  // arguments are used to construct the new one - passing `path` itself through would dangle.
+  const std::string pathCopy = path;
+  if (isExportedNoteImage(pathCopy)) {
+    switchTo<ImageViewerActivity>(render, input, pathCopy, [pathCopy]() {
+      std::string folderPath = pathCopy.substr(0, pathCopy.find_last_of('/'));
       if (folderPath.empty()) folderPath = "/";
       onGoToLibrary(folderPath);
     });
     return;
   }
-  switchTo<ReaderActivity>(render, input, path, [path](const std::string&) {
-    std::string folderPath = path.substr(0, path.find_last_of('/'));
+  switchTo<ReaderActivity>(render, input, pathCopy, [pathCopy](const std::string&) {
+    std::string folderPath = pathCopy.substr(0, pathCopy.find_last_of('/'));
     if (folderPath.empty()) folderPath = "/";
     onGoToLibrary(folderPath);
   });
@@ -276,13 +282,13 @@ void setup() {
     while (!Serial && (millis() - start) < 3000) delay(10);
   }
 
-  if (!SdMan.begin()) {
-    switchTo<FullScreenMessageActivity>(render, input, "SD card error", EpdFontFamily::BOLD);
-    return;
-  }
+  sdCardAvailable = SdMan.begin();
 
-  SETTINGS.loadFromFile();
-  OPDS_STORE.loadOrMigrate({"Default", SETTINGS.opdsServerUrl, SETTINGS.opdsUsername, SETTINGS.opdsPassword});
+  if (sdCardAvailable) {
+    SETTINGS.loadFromFile();
+    READER_SETTINGS.loadFromFile();
+    OPDS_STORE.loadOrMigrate({"Default", SETTINGS.opdsServerUrl, SETTINGS.opdsUsername, SETTINGS.opdsPassword});
+  }
   normalizeUnavailableClockSettings();
 
   switch (gpio.getWakeupReason()) {
@@ -295,6 +301,9 @@ void setup() {
     default:
       break;
   }
+
+  Serial.printf("[%lu] [MEM] Free heap at end of setup(): %u bytes\n", millis(),
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)));
 
   switchTo<BootActivity>(render, input);
   waitForPowerRelease();

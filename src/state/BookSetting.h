@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 
+#include "state/ReaderSetting.h"
 #include "state/SystemSetting.h"
 #include "system/FontManager.h"
 
@@ -30,6 +31,8 @@ enum class StatusBarItem {
   BOOK_TITLE,                 ///< Book title
   AUTHOR_NAME,                ///< Author name
   PAGE_NUMBERS_WITH_PERCENT,  ///< Page numbers and percentage combined (e.g., "12/340 45%")
+  TIME_LEFT_CHAPTER,          ///< Estimated time left in the current chapter (ETA feature)
+  TIME_LEFT_BOOK,             ///< Estimated time left in the complete book (ETA feature)
   STATUS_BAR_ITEM_COUNT
 };
 
@@ -51,7 +54,12 @@ struct StatusBarSectionConfig {
    * @param data Input buffer
    * @param offset Current offset in buffer
    */
-  void fromBytes(const uint8_t* data, size_t& offset) { item = static_cast<StatusBarItem>(data[offset++]); }
+  void fromBytes(const uint8_t* data, size_t& offset) {
+    item = static_cast<StatusBarItem>(data[offset++]);
+    if (static_cast<uint8_t>(item) >= static_cast<uint8_t>(StatusBarItem::STATUS_BAR_ITEM_COUNT)) {
+      item = StatusBarItem::NONE;
+    }
+  }
 
   /**
    * @brief Equality operator
@@ -81,11 +89,11 @@ struct StatusBarLayout {
  * @brief Per-book reading settings
  */
 struct BookSettings {
-  uint8_t fontFamily = SystemSetting::LITERATA;           ///< Font family
-  uint8_t fontSize = SystemSetting::SMALL;                ///< Font size
-  uint8_t lineHeight = 100;                               ///< Line height, % of natural (10-200)
-  uint8_t textSpace = 100;                                ///< Word spacing, % of natural (10-200)
-  uint8_t paragraphAlignment = SystemSetting::JUSTIFIED;  ///< Paragraph alignment
+  uint8_t fontFamily = SystemSetting::LITERATA;            ///< Font family
+  uint8_t fontSize = SystemSetting::SMALL;                 ///< Font size
+  uint8_t lineHeight = 100;                                ///< Line height, % of natural (10-200)
+  uint8_t textSpace = 100;                                 ///< Word spacing, % of natural (10-200)
+  uint8_t paragraphAlignment = SystemSetting::FOLLOW_CSS;  ///< Paragraph alignment
   /** Honor CSS `text-indent` when on (mirrors global "Indent" when unset in per-book file). */
   uint8_t paragraphCssIndentEnabled = 0;
 
@@ -94,7 +102,7 @@ struct BookSettings {
   uint8_t hyphenationEnabled = 1;     ///< Hyphenation enabled
   uint8_t bionicReadingEnabled = 0;   ///< Bionic Reading enabled
 
-  uint8_t screenMargin = 20;  ///< Screen margin in pixels
+  uint8_t screenMargin = 10;  ///< Screen margin in pixels
 
   uint8_t orientation = SystemSetting::PORTRAIT;  ///< Screen orientation
 
@@ -169,7 +177,7 @@ struct BookSettings {
       textSpace = 100;
     }
     if (paragraphAlignment >= SystemSetting::PARAGRAPH_ALIGNMENT_COUNT) {
-      paragraphAlignment = SystemSetting::JUSTIFIED;
+      paragraphAlignment = SystemSetting::FOLLOW_CSS;
     }
     paragraphCssIndentEnabled = paragraphCssIndentEnabled ? 1 : 0;
     extraParagraphSpacing = extraParagraphSpacing ? 1 : 0;
@@ -294,7 +302,7 @@ struct BookSettings {
         paragraphCssIndentEnabled = 1;
       }
     } else {
-      paragraphCssIndentEnabled = SystemSetting::getInstance().paragraphCssIndentEnabled;
+      paragraphCssIndentEnabled = ReaderSetting::getInstance().paragraphCssIndentEnabled;
     }
 
     if (bytesAvailable >= offset + 1) {
@@ -318,13 +326,13 @@ struct BookSettings {
         readerImageGrayscale = SystemSetting::READER_IMAGE_LOW;
       }
     } else {
-      readerImageGrayscale = SystemSetting::getInstance().readerImageGrayscale;
+      readerImageGrayscale = ReaderSetting::getInstance().readerImageGrayscale;
     }
 
     if (bytesAvailable >= offset + 1) {
       readerSmartRefreshOnImages = data[offset++] ? 1 : 0;
     } else {
-      readerSmartRefreshOnImages = SystemSetting::getInstance().readerSmartRefreshOnImages ? 1 : 0;
+      readerSmartRefreshOnImages = ReaderSetting::getInstance().readerSmartRefreshOnImages ? 1 : 0;
     }
 
     if (bytesAvailable >= offset + 1) {
@@ -393,10 +401,10 @@ struct BookSettings {
   }
 
   /**
-   * @brief Loads settings from global SystemSetting
+   * @brief Loads settings from global ReaderSetting
    */
   void loadFromGlobalSettings() {
-    SystemSetting& global = SystemSetting::getInstance();
+    ReaderSetting& global = ReaderSetting::getInstance();
     fontFamily = global.fontFamily;
     fontSize = global.fontSize;
     lineHeight = global.lineHeight;
@@ -443,11 +451,11 @@ struct BookSettings {
   }
 
   /**
-   * @brief Writes these settings back into the global SystemSetting reader fields (inverse of
-   *        loadFromGlobalSettings). Does NOT persist — caller should SETTINGS.saveToFile().
+   * @brief Writes these settings back into the global ReaderSetting reader fields (inverse of
+   *        loadFromGlobalSettings). Does NOT persist — caller should READER_SETTINGS.saveToFile().
    */
   void applyToGlobalSettings() const {
-    SystemSetting& global = SystemSetting::getInstance();
+    ReaderSetting& global = ReaderSetting::getInstance();
     global.fontFamily = fontFamily;
     global.fontSize = fontSize;
     global.lineHeight = lineHeight;
@@ -495,7 +503,7 @@ struct BookSettings {
    * @return Font identifier for rendering
    */
   int getReaderFontId() const {
-    SystemSetting& global = SystemSetting::getInstance();
+    ReaderSetting& global = ReaderSetting::getInstance();
     uint8_t oldFam = global.fontFamily;
     uint8_t oldSize = global.fontSize;
     global.fontFamily = this->fontFamily;

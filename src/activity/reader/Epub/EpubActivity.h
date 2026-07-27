@@ -14,8 +14,11 @@
 #include <vector>
 
 #include "EpubAnnotationUi.h"
+#include "EpubDictionaryUi.h"
 #include "EpubReadingStats.h"
 #include "MenuDrawer.h"
+#include "OrientationPickerUi.h"
+#include "ReaderButtonBindings.h"
 #include "SettingsDrawer.h"
 #include "StatusBar.h"
 #include "activity/ActivityWithSubactivity.h"
@@ -41,6 +44,9 @@ struct ViewportInfo {
  */
 class EpubActivity final : public ActivityWithSubactivity {
   friend class EpubAnnotationUi;
+  friend class EpubDictionaryUi;
+  friend class OrientationPickerUi;
+  friend class ReaderButtonBindings;
 
  public:
   /**
@@ -131,6 +137,8 @@ class EpubActivity final : public ActivityWithSubactivity {
   bool hasSettingsDrawerSnapshot_ = false;
   /** Last orientation value used for a full layout/section rebuild; used to detect drift after global sync. */
   uint8_t bookLayoutAppliedOrientation_ = 0xFF;
+  /** Last global status-bar layout used for a full layout/section rebuild. */
+  uint32_t statusBarLayoutAppliedSignature_ = 0xFFFFFFFF;
   bool leftButtonLongPressProcessed = false;
 
   EpubReadingStats readingStats_;
@@ -183,9 +191,20 @@ class EpubActivity final : public ActivityWithSubactivity {
   void loadProgress();
 
   /**
+   * Lazily constructs and wires up menuDrawer, without changing its visibility. Shared by
+   * toggleMenuDrawer() and openTableOfContents().
+   */
+  void ensureMenuDrawer();
+
+  /**
    * Toggles the menu drawer visibility.
    */
   void toggleMenuDrawer();
+
+  /**
+   * Opens the menu drawer directly to its Table of Contents view, skipping the main menu list.
+   */
+  void openTableOfContents();
 
   /**
    * Toggles the settings drawer visibility.
@@ -268,6 +287,9 @@ class EpubActivity final : public ActivityWithSubactivity {
   void drawBookmarkIndicator();
 
   EpubAnnotationUi annUi_;
+  EpubDictionaryUi dictUi_;
+  OrientationPickerUi orientationPicker_;
+  ReaderButtonBindings btnBindings_;
 
   /**
    * Applies current book settings and rebuilds affected sections.
@@ -312,8 +334,11 @@ class EpubActivity final : public ActivityWithSubactivity {
   std::unique_ptr<Section> loadSection(int spineIndex, const ViewportInfo& info, bool showProgress = true);
 
   void setupOrientation();
-  /** Copies device reading orientation into book settings when the book follows global defaults. */
-  void syncOrientationFromGlobalIfNeeded();
+  /** Refreshes inherited reader defaults into books that do not use custom settings. */
+  bool syncSettingsFromGlobalIfNeeded();
+  uint32_t currentStatusBarLayoutSignature() const;
+  bool statusBarLayoutChangedSinceApplied() const;
+  void markStatusBarLayoutApplied();
   /** Settings drawer callback: keep renderer, drawer, and menu layout in sync while editing. */
   void onBookSettingsLiveLayoutSync();
   void ensureThumbnailExists();
