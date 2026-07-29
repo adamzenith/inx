@@ -253,10 +253,12 @@ bool endsWithCompleteUtf8Codepoint(const char* s, int byteLen) {
 }
 
 bool hasDropCapHint(const std::string& classAttr, const std::string& idAttr, const std::string& styleAttr) {
-  return containsAsciiInsensitive(idAttr, "drop") || containsAsciiInsensitive(classAttr, "drop") ||
-         containsAsciiInsensitive(classAttr, "dropcap") || containsAsciiInsensitive(classAttr, "drop-cap") ||
-         containsAsciiInsensitive(classAttr, "initial-letter") || containsAsciiInsensitive(idAttr, "dropcap") ||
-         containsAsciiInsensitive(idAttr, "drop-cap") || containsAsciiInsensitive(idAttr, "initial-letter") ||
+  // Match specific drop-cap names only. A bare "drop" substring falsely fires on "dropdown",
+  // "backdrop", etc., turning ordinary paragraphs into drop caps.
+  return containsAsciiInsensitive(classAttr, "dropcap") || containsAsciiInsensitive(classAttr, "drop-cap") ||
+         containsAsciiInsensitive(classAttr, "drop_cap") || containsAsciiInsensitive(classAttr, "initial-letter") ||
+         containsAsciiInsensitive(idAttr, "dropcap") || containsAsciiInsensitive(idAttr, "drop-cap") ||
+         containsAsciiInsensitive(idAttr, "drop_cap") || containsAsciiInsensitive(idAttr, "initial-letter") ||
          containsAsciiInsensitive(styleAttr, "initial-letter");
 }
 
@@ -1288,9 +1290,19 @@ void ChapterHtmlSlimParser::applyDropCapHint(const XML_Char* name, const std::st
                                              const std::string& classAttr, const std::string& idAttr,
                                              const std::string& styleAttr) {
   const bool attrHint = hasDropCapHint(classAttr, idAttr, styleAttr);
-  const bool pseudoHint = css().hasFirstLetterDropCapHint(tagLower, classAttr, idAttr, styleAttr);
+  bool pseudoHint = css().hasFirstLetterDropCapHint(tagLower, classAttr, idAttr, styleAttr);
+  // Pseudo (::first-letter) drop caps are gated to the first occurrence in the chapter: real drop
+  // caps open a chapter, and the selector matcher can't fully verify ancestor context, so applying
+  // them to every matching paragraph would stipple the whole book with drop caps. Class/id-derived
+  // hints stay ungated — they are explicit and per-paragraph.
+  if (pseudoHint && sectionPseudoDropCapUsed) {
+    pseudoHint = false;
+  }
   if (!attrHint && !pseudoHint) {
     return;
+  }
+  if (pseudoHint) {
+    sectionPseudoDropCapUsed = true;
   }
   flushPartWordBuffer();
   inDropCap = true;
@@ -1341,7 +1353,12 @@ TextBlock::Style ChapterHtmlSlimParser::resolveBlockStyle(const XML_Char* elemen
     return elementHasExplicitTextAlign ? elementCssStyle : inheritedCssStyle;
   }
   if (elementHasExplicitTextAlign) {
-    return resolveTextAlignFromAttributes(elementName, atts, inheritedCssStyle);
+    const TextBlock::Style cssStyle = resolveTextAlignFromAttributes(elementName, atts, inheritedCssStyle);
+    // center/right carry authorial intent (titles, epigraphs, verse) and are preserved; justify/left
+    // are just body-flow alignment, which the reader's fixed alignment is meant to replace.
+    if (cssStyle == TextBlock::CENTER_ALIGN || cssStyle == TextBlock::RIGHT_ALIGN) {
+      return cssStyle;
+    }
   }
   return static_cast<TextBlock::Style>(paragraphAlignment);
 }
