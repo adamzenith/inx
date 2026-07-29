@@ -250,14 +250,14 @@ void SettingsDrawer::setupMenu() {
     fontEntry.group = GroupType::FONT;
     fontEntry.name = "Size";
     fontEntry.getValueText = [](const BookSettings& s) -> const char* {
-      static const char* sizes[] = {"Extra Small", "Small", "Medium", "Large", "X Large"};
+      static const char* sizes[] = {"Tiny", "XX Small", "Extra Small", "Small", "Medium", "Large", "X Large"};
       int index = s.fontSize;
-      if (index > 4) index = 1;
+      if (index >= SystemSetting::FONT_SIZE_COUNT) index = SystemSetting::SMALL;
       return sizes[index];
     };
     fontEntry.change = [](BookSettings& s, int delta) {
       int newVal = s.fontSize + delta;
-      if (newVal >= 0 && newVal <= 4) {
+      if (newVal >= 0 && newVal < SystemSetting::FONT_SIZE_COUNT) {
         s.fontSize = newVal;
         s.markCustomSettings();
       }

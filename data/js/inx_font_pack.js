@@ -8,10 +8,13 @@
   var MAGIC = 0x45504446;
   var VERSION = 1;
   /**
-   * Reader steps (10–18) use Literata regular advanceY (31…56) as a px baseline, then scaled.
+   * Reader steps (6–18) use Literata regular advanceY (19…56) as a px baseline, then scaled.
    * ~0.87 was still ~one reader size larger than built-in Literata; ~0.74 aligns steps with system fonts.
+   * 10–18 read advanceY straight off the bundled literata_<pt>_regular headers. There are no bundled 6/8pt
+   * faces, so those two extrapolate the same series (advanceY ~= 3.09 x pt); built-in families fall back to
+   * their 10pt face at those steps, while SD families packed here render at true 6/8pt.
    */
-  var SIZES = [10, 12, 14, 16, 18];
+  var SIZES = [6, 8, 10, 12, 14, 16, 18];
   var RASTER_CALIBRATION = 0.74;
   // Match fontcon/fontconvert.py 2-bit coverage buckets:
   // coverage 0-111 white, 112-127 light gray, 128-207 dark gray, 208-255 black.
@@ -26,6 +29,12 @@
   function readerStepToCanvasPx(step) {
     var base;
     switch (step) {
+      case 6:
+        base = 19;
+        break;
+      case 8:
+        base = 25;
+        break;
       case 10:
         base = 31;
         break;
@@ -307,7 +316,7 @@
   /**
    * @param {string} styleName — "Regular" | "Bold" | "Italic" | "BoldItalic" (embedded name + filename stem)
    * @param {string} familyCss — loaded @font-face family string
-   * @param {number} readerStep — 10|12|14|16|18 (filename suffix; canvas px from readerStepToCanvasPx)
+   * @param {number} readerStep — 6|8|10|12|14|16|18 (filename suffix; canvas px from readerStepToCanvasPx)
    * @param {number[]} codepoints sorted ascending
    */
   async function buildBin(styleName, familyCss, readerStep, codepoints, callbacks) {

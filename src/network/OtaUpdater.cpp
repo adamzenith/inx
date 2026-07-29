@@ -23,7 +23,7 @@
 #include "esp_wifi.h"
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/obijuankenobiii/inx/releases/latest";
+constexpr char latestReleaseUrl[] = "https://api.github.com/repos/adamzenith/inx/releases/latest";
 
 constexpr size_t kMaxReleaseJsonBytes = 12288;
 
@@ -276,13 +276,22 @@ bool OtaUpdater::isUpdateNewer() const {
     return false;
   }
 
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
+  int currentMajor = 0, currentMinor = 0, currentPatch = 0;
+  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
 
   const auto currentVersion = INX_VERSION;
 
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
+  // Tags must be bare semver ("1.0.19", not "v1.0.19"): a leading 'v' makes sscanf match nothing, and acting
+  // on the unparsed values would offer or hide updates at random. Refuse to update rather than guess.
+  if (sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch) != 3) {
+    Serial.printf("[%lu] [OTA] Unparseable release tag '%s' (expected bare semver)\n", millis(),
+                  latestVersion.c_str());
+    return false;
+  }
+  if (sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch) != 3) {
+    Serial.printf("[%lu] [OTA] Unparseable running version '%s'\n", millis(), currentVersion);
+    return false;
+  }
 
   if (latestMajor != currentMajor) return latestMajor > currentMajor;
 
