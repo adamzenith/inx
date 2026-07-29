@@ -476,7 +476,9 @@ int ReaderSetting::getReaderFontIdForFamilyAndSize(uint8_t family, uint8_t size)
   if (size >= SystemSetting::FONT_SIZE_COUNT) {
     size = SystemSetting::MEDIUM;
   }
-  static const int kPtBySize[] = {10, 12, 14, 16, 18};
+  static const int kPtBySize[] = {6, 8, 10, 12, 14, 16, 18};
+  static_assert(sizeof(kPtBySize) / sizeof(kPtBySize[0]) == SystemSetting::FONT_SIZE_COUNT,
+                "kPtBySize must cover every SystemSetting::FONT_SIZE step");
   const int preferredPt = kPtBySize[size];
 
   if (family >= SystemSetting::FONT_FAMILY_BUILTIN_COUNT) {
@@ -491,6 +493,10 @@ int ReaderSetting::getReaderFontIdForFamilyAndSize(uint8_t family, uint8_t size)
   switch (family) {
     case SystemSetting::ATKINSON_HYPERLEGIBLE:
       switch (size) {
+        // No built-in 6/8pt body face (the 8pt build is regular-only, so it cannot carry bold/italic runs);
+        // fall back to the smallest complete family.
+        case SystemSetting::TINY:
+        case SystemSetting::EXTRA_EXTRA_SMALL:
         case SystemSetting::EXTRA_SMALL:
           return ATKINSON_HYPERLEGIBLE_10_FONT_ID;
         case SystemSetting::SMALL:
@@ -506,6 +512,8 @@ int ReaderSetting::getReaderFontIdForFamilyAndSize(uint8_t family, uint8_t size)
     case SystemSetting::LITERATA:
     default:
       switch (size) {
+        case SystemSetting::TINY:
+        case SystemSetting::EXTRA_EXTRA_SMALL:
         case SystemSetting::EXTRA_SMALL:
           return LITERATA_10_FONT_ID;
         case SystemSetting::SMALL:

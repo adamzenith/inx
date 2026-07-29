@@ -7,6 +7,9 @@ on:
 jobs:
   build-release:
     runs-on: ubuntu-latest
+    # Needed for the Publish Release step; the default GITHUB_TOKEN is read-only in many repos.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -39,3 +42,14 @@ jobs:
             .pio/build/gh_release/firmware.elf
             .pio/build/gh_release/firmware.map
             .pio/build/gh_release/partitions.bin
+
+      # On-device OTA polls /releases/latest and looks for an asset named exactly "firmware.bin", so this must
+      # publish a real Release (not just workflow artifacts). Keep the asset list to firmware.bin alone: the
+      # whole release JSON has to fit OtaUpdater's 12 KB cap, which the release body and asset objects share.
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: .pio/build/gh_release/firmware.bin
+          # Drafts and prereleases are invisible to /releases/latest.
+          draft: false
+          prerelease: false

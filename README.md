@@ -177,6 +177,8 @@ You can also install fonts on the SD card:
 ```text
 /fonts/
   MyFont/
+    Regular_6.bin
+    Regular_8.bin
     Regular_10.bin
     Regular_12.bin
     Regular_14.bin
@@ -184,6 +186,9 @@ You can also install fonts on the SD card:
     Italic_14.bin
     BoldItalic_14.bin
 ```
+
+The number is the reader size step in points (6, 8, 10, 12, 14, 16, 18). Packs missing a step fall back to the
+nearest size that is present, so older 10–18 packs still work at every step.
 
 The web font manager converts TTF/OTF files into the `.bin` format used by the reader. Regular is required; bold, italic, and bold italic are optional.
 
