@@ -98,36 +98,99 @@ function setUploadStatus(text, count, percent, visible) {
   document.getElementById("upload-progress").style.width = Math.max(0, Math.min(100, percent || 0)) + "%";
 }
 
-async function uploadBlobToPath(blob, filename, destination) {
+// The device serves one HTTP client at a time with keep-alive disabled, so a burst of uploads
+// intermittently loses a connection ("Failed to fetch"). Retry, pace, then verify sizes.
+const UPLOAD_ATTEMPTS = 3;
+const UPLOAD_TIMEOUT_MS = 45000;
+const UPLOAD_GAP_MS = 150;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function uploadBlobOnce(blob, filename, destination, signal) {
   const form = new FormData();
   form.append("file", blob, filename);
   const response = await fetch("/upload?path=" + encodeURIComponent(destination === "/" ? "" : destination), {
     method: "POST",
     body: form,
+    signal,
   });
   if (!response.ok) throw new Error((await response.text()) || "Upload failed");
+}
+
+async function uploadBlobToPath(blob, filename, destination) {
+  let lastError;
+  for (let attempt = 1; attempt <= UPLOAD_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+    try {
+      await uploadBlobOnce(blob, filename, destination, controller.signal);
+      return;
+    } catch (error) {
+      lastError = controller.signal.aborted ? new Error("timed out") : error;
+      if (attempt < UPLOAD_ATTEMPTS) await sleep(400 * attempt);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError;
+}
+
+// Returns the files whose on-device size does not match, or null if the listing was unreadable.
+async function verifyUploads(files, destination) {
+  try {
+    const response = await fetch("/api/files?path=" + encodeURIComponent(destination));
+    if (!response.ok) return null;
+    const sizes = new Map();
+    for (const entry of await response.json()) {
+      if (!entry.isDirectory) sizes.set(entry.name, entry.size);
+    }
+    return Array.from(files).filter((file) => sizes.get(file.name) !== file.size);
+  } catch (error) {
+    return null;
+  }
 }
 
 async function uploadFiles(files, destination) {
   if (!files.length) return;
   setUploadStatus("Uploading files", "0/" + files.length, 0, true);
-  let completed = 0;
   const failures = [];
   for (let index = 0; index < files.length; index++) {
     const file = files[index];
     setUploadStatus("Uploading " + file.name, index + 1 + "/" + files.length, (index / files.length) * 100, true);
     try {
       await uploadBlobToPath(file, file.name, destination);
-      completed++;
     } catch (error) {
-      failures.push(file.name + ": " + error.message);
+      failures.push(file);
     }
+    if (index + 1 < files.length) await sleep(UPLOAD_GAP_MS);
   }
+
+  const mismatched = await verifyUploads(files, destination);
+  let outstanding = mismatched === null ? failures : mismatched;
+  if (mismatched && mismatched.length) {
+    setUploadStatus("Re-uploading " + mismatched.length + " file(s)", "", 100, true);
+    for (const file of mismatched) {
+      try {
+        await uploadBlobToPath(file, file.name, destination);
+      } catch (error) {
+        // Reported below via the verification pass.
+      }
+      await sleep(UPLOAD_GAP_MS);
+    }
+    const stillBad = await verifyUploads(files, destination);
+    if (stillBad !== null) outstanding = stillBad;
+  }
+
+  const completed = files.length - outstanding.length;
   setUploadStatus("Upload complete", completed + "/" + files.length, 100, true);
   await hydrate();
   showToast(
-    failures.length ? completed + " uploaded, " + failures.length + " failed" : completed + " file(s) uploaded",
-    failures.length > 0
+    outstanding.length
+      ? completed + " uploaded, failed: " + outstanding.map((file) => file.name).join(", ")
+      : completed + " file(s) uploaded",
+    outstanding.length > 0
   );
   setTimeout(() => setUploadStatus("", "", 0, false), 1800);
 }
