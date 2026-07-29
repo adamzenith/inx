@@ -59,6 +59,9 @@ class BookMetadataCache {
 
  private:
   std::string cachePath;
+  // On-disk LUT offset is serialized as a fixed 4-byte value (see buildBookBin's local uint32_t
+  // lutOffset). Must stay uint32_t here so the read width matches on 64-bit hosts (the simulator);
+  // a size_t member would read 8 bytes and shift every field after it in book.bin's header.
   uint32_t lutOffset;
   uint16_t spineCount;
   uint16_t tocCount;
