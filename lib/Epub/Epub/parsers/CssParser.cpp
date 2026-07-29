@@ -1052,18 +1052,12 @@ std::string CssParser::getBorderStyleKeyword(const std::string& edge, const std:
   return "solid";
 }
 
-float CssParser::getFontSizeEm(const std::string& elementTagLower, const std::string& className, const std::string& id,
-                               const std::string& styleAttr) const {
-  std::map<std::string, std::string> inlineMap;
-  parseInlineStyle(styleAttr, inlineMap);
-  std::string raw;
-  const auto it = inlineMap.find("font-size");
-  if (it != inlineMap.end()) {
-    raw = it->second;
-  } else {
-    raw = getCascadedPropertyValue("font-size", className, id, styleAttr, elementTagLower);
-  }
-  raw = toLower(trim(raw));
+// Resolve a raw CSS font-size value (keyword or <length>/<percentage>) to a multiple of the
+// inherited font size (em). Shared by getFontSizeEm and the drop-cap magnitude check.
+static float parseFontSizeValueToEm(std::string raw) {
+  raw = trimCssWs(raw);
+  std::transform(raw.begin(), raw.end(), raw.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   if (raw.empty()) return 1.0f;
 
   // Size keywords (approximate CSS scaling).
@@ -1100,6 +1094,24 @@ float CssParser::getFontSizeEm(const std::string& elementTagLower, const std::st
   if (unit == "px") return num / 16.0f;  // relative to the 16px CSS base
   if (unit == "pt") return (num * 96.0f / 72.0f) / 16.0f;
   return num;  // unitless — treat like em
+}
+
+// A ::first-letter rule only reads as a drop cap when it enlarges the glyph substantially; a
+// bold/italic first letter or a 1.2em bump is typographic emphasis, not a drop cap.
+static constexpr float kDropCapMinFontSizeEm = 2.0f;
+
+float CssParser::getFontSizeEm(const std::string& elementTagLower, const std::string& className, const std::string& id,
+                               const std::string& styleAttr) const {
+  std::map<std::string, std::string> inlineMap;
+  parseInlineStyle(styleAttr, inlineMap);
+  std::string raw;
+  const auto it = inlineMap.find("font-size");
+  if (it != inlineMap.end()) {
+    raw = it->second;
+  } else {
+    raw = getCascadedPropertyValue("font-size", className, id, styleAttr, elementTagLower);
+  }
+  return parseFontSizeValueToEm(raw);
 }
 
 uint8_t CssParser::getVerticalAlign(const std::string& elementTagLower, const std::string& className,
@@ -1551,22 +1563,20 @@ bool CssParser::hasFirstLetterDropCapHint(const std::string& elementTagLower, co
     if (!rule.isFirstLetterPseudo) {
       continue;
     }
-    if (!matchSelectorList(rule.selectorLower, elementTagLower, classTokens, idLower, true).matched) {
+    const SelectorMatchInfo match = matchSelectorList(rule.selectorLower, elementTagLower, classTokens, idLower, true);
+    // The matcher only checks the rightmost compound, so a contextual selector
+    // (e.g. div.chapter p::first-letter) would otherwise "match" every <p> in the book. Requiring a
+    // self-verifiable match keeps drop caps off unrelated paragraphs.
+    if (!match.matched || match.contextual) {
       continue;
     }
     if (rule.properties.find("initial-letter") != rule.properties.end()) {
       return true;
     }
-    if (rule.properties.find("font-size") != rule.properties.end()) {
-      return true;
-    }
-    if (rule.properties.find("line-height") != rule.properties.end()) {
-      return true;
-    }
-    if (rule.properties.find("font-weight") != rule.properties.end()) {
-      return true;
-    }
-    if (rule.properties.find("font-style") != rule.properties.end()) {
+    // Only a substantial enlargement reads as a drop cap; weight/style/line-height on the first
+    // letter is emphasis, not a drop cap, and a small font-size bump is too.
+    const auto fontSizeIt = rule.properties.find("font-size");
+    if (fontSizeIt != rule.properties.end() && parseFontSizeValueToEm(fontSizeIt->second) >= kDropCapMinFontSizeEm) {
       return true;
     }
   }
@@ -1613,7 +1623,8 @@ uint8_t CssParser::getFirstLetterDropCapLineCount(const std::string& elementTagL
     if (!rule.isFirstLetterPseudo) {
       continue;
     }
-    if (!matchSelectorList(rule.selectorLower, elementTagLower, classTokens, idLower, true).matched) {
+    const SelectorMatchInfo match = matchSelectorList(rule.selectorLower, elementTagLower, classTokens, idLower, true);
+    if (!match.matched || match.contextual) {
       continue;
     }
     const auto it = rule.properties.find("initial-letter");
