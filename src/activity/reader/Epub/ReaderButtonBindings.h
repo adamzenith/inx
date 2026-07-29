@@ -31,18 +31,25 @@ class ReaderButtonBindings {
   /** Fires a single READER_BUTTON_ACTION immediately, bypassing press-state tracking. Public so
    *  EpubActivity's Power button (short-press only, no long-press pairing so it doesn't need
    *  handleButton()'s state machine) can reuse the same 12-action dispatch as Up/Down/Left/Right
-   *  instead of duplicating a subset of it. */
-  void dispatch(EpubActivity& act, uint8_t action);
+   *  instead of duplicating a subset of it. `repeat` collapses coalesced page-turn presses into
+   *  one dispatch (only PAGE_NEXT/PAGE_PREVIOUS honor it). */
+  void dispatch(EpubActivity& act, uint8_t action, uint8_t repeat = 1);
+
+  /** Hard cap on presses coalesced into one render, so a burst cannot fling the reader across a book. */
+  static constexpr uint8_t kMaxCoalescedTurns = 12;
 
  private:
   struct PressState {
     bool active = false;
     unsigned long pressStartMs = 0;
     bool longFired = false;
+    bool shortFired = false;
   };
 
   bool handleButton(EpubActivity& act, MappedInputManager::Button button, PressState& state, uint8_t shortAction,
                     uint8_t longAction);
+  /** Short-action dispatch with page-turn coalescing (drains the button's latched press count). */
+  void dispatchShort(EpubActivity& act, MappedInputManager::Button button, uint8_t shortAction);
 
   PressState upState_;
   PressState downState_;

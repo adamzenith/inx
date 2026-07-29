@@ -72,6 +72,18 @@ class EInkDisplay {
 
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
 
+  /**
+   * True while a HALF/FULL refresh started by displayBuffer() is still driving the panel.
+   * Non-blocking. X3, FAST and STRONG_FAST refreshes are synchronous and never set it.
+   */
+  bool isRefreshInFlight() const { return _refreshInFlight; }
+
+  /**
+   * Blocks until any in-flight asynchronous refresh has finished. Called first thing by every
+   * method that talks to the panel; no-op when nothing is in flight.
+   */
+  void ensureIdle();
+
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync();
 
@@ -128,6 +140,11 @@ class EInkDisplay {
   bool customLutActive = false;
   bool inGrayscaleMode = false;
   bool drawGrayscale = false;
+  // Set when displayBuffer() returned before the panel finished a HALF/FULL refresh (X4 only).
+  // Plain bool: single core, single-byte loads/stores are atomic, and cross-task panel access is
+  // already unsynchronized in this codebase - ensureIdle() at every entry point preserves the
+  // status quo; the worst race outcome is one extra waitWhileBusy on an idle panel.
+  bool _refreshInFlight = false;
 
   // Low-level display control
   void resetDisplay();
@@ -141,6 +158,9 @@ class EInkDisplay {
   // Low-level display operations
   void setRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
   void writeRamBuffer(uint8_t ramBuffer, const uint8_t* data, uint32_t size);
+  // X4 refresh trigger; body of the old refreshDisplay. waitForCompletion=false returns right
+  // after CMD_MASTER_ACTIVATION and marks the refresh in flight.
+  void triggerRefresh(RefreshMode mode, bool turnOffScreen, bool waitForCompletion);
 };
 
 extern const unsigned char lut_x4_quality[];

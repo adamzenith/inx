@@ -25,6 +25,8 @@ class EpubDictionaryUi {
   bool isActive() const { return mode_; }
 
   void tryChordEnter(EpubActivity& act);
+  /** True while the DOWN+LEFT chord is being held (entry pending). */
+  bool chordPending() const { return chordStartMs_ != 0; }
   void enter(EpubActivity& act);
   void exit(EpubActivity& act);
   void handleInput(EpubActivity& act);

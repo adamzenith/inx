@@ -59,43 +59,102 @@ uint8_t InputManager::getState() {
 
 void InputManager::injectOneShotPress(const uint8_t buttonIndex) {
   if (buttonIndex <= BTN_POWER) {
+    taskENTER_CRITICAL(&latchMux);
     pendingInjectPress |= static_cast<uint8_t>(1u << buttonIndex);
+    taskEXIT_CRITICAL(&latchMux);
   }
 }
 
-void InputManager::update() {
+void InputManager::sampleOnce() {
   const unsigned long currentTime = millis();
+  // getState() (analogRead) must stay outside the critical section.
   const uint8_t state = getState();
-
-  pressedEvents = 0;
-  releasedEvents = 0;
 
   if (state != lastState) {
     lastDebounceTime = currentTime;
     lastState = state;
   }
 
-  if ((currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (state != currentState) {
-      pressedEvents = state & ~currentState;
-      releasedEvents = currentState & ~state;
+  if ((currentTime - lastDebounceTime) <= DEBOUNCE_DELAY || state == currentState) {
+    return;
+  }
 
-      if (pressedEvents > 0 && currentState == 0) {
-        buttonPressStart = currentTime;
-      }
+  const uint8_t pressed = state & ~currentState;
+  const uint8_t released = currentState & ~state;
 
-      if (releasedEvents > 0 && state == 0) {
-        buttonPressFinish = currentTime;
-      }
+  if (pressed > 0 && currentState == 0) {
+    buttonPressStart = currentTime;
+  }
 
-      currentState = state;
+  if (released > 0 && state == 0) {
+    buttonPressFinish = currentTime;
+  }
+
+  currentState = state;
+
+  taskENTER_CRITICAL(&latchMux);
+  pendingPressed |= pressed;
+  pendingReleased |= released;
+  for (uint8_t i = 0; i < NUM_BUTTONS_TOTAL; i++) {
+    if ((pressed & (1u << i)) != 0 && pendingPressCounts[i] < MAX_PRESS_COUNT) {
+      pendingPressCounts[i]++;
     }
   }
+  taskEXIT_CRITICAL(&latchMux);
+}
 
-  if (pendingInjectPress != 0) {
-    pressedEvents |= pendingInjectPress;
-    pendingInjectPress = 0;
+void InputManager::update() {
+  if (samplingTask == nullptr) {
+    sampleOnce();
   }
+
+  taskENTER_CRITICAL(&latchMux);
+  pressedEvents = pendingPressed | pendingInjectPress;
+  releasedEvents = pendingReleased;
+  pendingPressed = 0;
+  pendingReleased = 0;
+  pendingInjectPress = 0;
+  for (uint8_t i = 0; i < NUM_BUTTONS_TOTAL; i++) {
+    consumedPressCounts[i] = pendingPressCounts[i];
+    pendingPressCounts[i] = 0;
+  }
+  heldStart = buttonPressStart;
+  heldFinish = buttonPressFinish;
+  taskEXIT_CRITICAL(&latchMux);
+}
+
+uint8_t InputManager::takePressCount(const uint8_t buttonIndex) {
+  if (buttonIndex >= NUM_BUTTONS_TOTAL) {
+    return 0;
+  }
+  const uint8_t count = consumedPressCounts[buttonIndex];
+  consumedPressCounts[buttonIndex] = 0;
+  return count;
+}
+
+void InputManager::samplingTaskTrampoline(void* arg) {
+  auto* self = static_cast<InputManager*>(arg);
+  TickType_t lastWake = xTaskGetTickCount();
+  for (;;) {
+    self->sampleOnce();
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(SAMPLE_PERIOD_MS));
+  }
+}
+
+bool InputManager::startSamplingTask() {
+  if (samplingTask != nullptr) {
+    return true;
+  }
+  return xTaskCreate(&InputManager::samplingTaskTrampoline, "btnSample", SAMPLING_TASK_STACK, this,
+                     SAMPLING_TASK_PRIO, &samplingTask) == pdPASS;
+}
+
+void InputManager::stopSamplingTask() {
+  if (samplingTask == nullptr) {
+    return;
+  }
+  vTaskDelete(samplingTask);
+  samplingTask = nullptr;
 }
 
 bool InputManager::isPressed(const uint8_t buttonIndex) const { return currentState & (1 << buttonIndex); }
@@ -110,10 +169,10 @@ bool InputManager::wasAnyReleased() const { return releasedEvents > 0; }
 
 unsigned long InputManager::getHeldTime() const {
   if (currentState > 0) {
-    return millis() - buttonPressStart;
+    return millis() - heldStart;
   }
 
-  return buttonPressFinish - buttonPressStart;
+  return heldFinish - heldStart;
 }
 
 const char* InputManager::getButtonName(const uint8_t buttonIndex) {

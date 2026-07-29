@@ -30,6 +30,9 @@ class HalDisplay {
   void displayBuffer(RefreshMode mode = RefreshMode::FAST_REFRESH);
   void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
 
+  /** True while an asynchronous HALF/FULL refresh (X4) is still driving the panel. Non-blocking. */
+  bool isRefreshInFlight() const;
+
   void deepSleep();
 
   uint8_t* getFrameBuffer() const;

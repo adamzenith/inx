@@ -669,6 +669,7 @@ void EpubActivity::onEnter() {
   initStats();
 
   updateRequired = true;
+  rapidTurn_ = false;
   lastAutoPageTurnTime = millis();
   bookLayoutAppliedOrientation_ = bookSettings.orientation;
   markStatusBarLayoutApplied();
@@ -884,6 +885,12 @@ void EpubActivity::loop() {
   }
 
   if (updateRequired) {
+    if (renderer.isRefreshInFlight()) {
+      // Panel still busy with an async refresh: keep looping so further presses land and
+      // coalesce, and yield the CPU (skipLoopDelay() is true here, so loop() won't delay).
+      vTaskDelay(pdMS_TO_TICKS(2));
+      return;
+    }
     updateRequired = false;
     renderScreen();
     return;
@@ -1651,6 +1658,7 @@ void EpubActivity::renderScreen(const bool clearFramebuffer) {
   lastGoodSpineIndex_ = currentSpineIndex;
   lastGoodPageNumber_ = section->currentPage;
   chapterRecoveryAttempted_ = false;
+  rapidTurn_ = false;
 }
 
 /**
@@ -1751,7 +1759,9 @@ void EpubActivity::renderContents(std::unique_ptr<Page> page, const int oriented
 
   const bool imagePageWithAA = pageHasImages && textAa;
 
-  const bool needsTextAntiAliasPass = textAa;
+  // Skipped during rapid turning: the grayscale AA post-pass would block on the async HALF
+  // refresh and cancel its latency win; the last page of a burst renders with AA again.
+  const bool needsTextAntiAliasPass = textAa && !rapidTurn_;
 
   const bool smartImageRefreshEnabled = READER_SETTINGS.readerSmartRefreshOnImages && !isBookmarking && !annUi_.isActive();
   const bool smartRefreshAfterLargeImage = lastPageHadImages && lastPageHadLargeImage;
@@ -1782,7 +1792,10 @@ void EpubActivity::renderContents(std::unique_ptr<Page> page, const int oriented
   const bool displayWithQualityPass = highQuality && bwStored;
   const bool smartRefreshThisPageAfterLargeImage = smartImageRefreshEnabled && smartRefreshAfterLargeImage;
   auto displayPageBuffer = [this, smartRefreshThisPageAfterLargeImage]() {
-    if (smartRefreshThisPageAfterLargeImage || pagesUntilFullRefresh <= 1) {
+    // rapidTurn_: HALF is asynchronous on X4, so the loop keeps polling input (and coalescing
+    // further presses) while the panel refreshes. It also resets the ghosting counter - a HALF
+    // *is* the cleanup refresh.
+    if (rapidTurn_ || smartRefreshThisPageAfterLargeImage || pagesUntilFullRefresh <= 1) {
       renderer.displayBuffer(HalDisplay::HALF_REFRESH);
       pagesUntilFullRefresh = READER_SETTINGS.getRefreshFrequency();
     } else {

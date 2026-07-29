@@ -106,6 +106,12 @@ class EpubActivity final : public ActivityWithSubactivity {
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
   bool updateRequired = false;
+  /**
+   * Set when a page-turn dispatch coalesced >1 press or arrived while the panel was busy: the
+   * next render uses the (asynchronous on X4) HALF waveform instead of the FAST cadence and
+   * skips the text-AA post-pass. Cleared at the end of renderScreen().
+   */
+  bool rapidTurn_ = false;
   bool bookmarkLongPressProcessed = false;
   bool leftLongPressProcessed = false;
   int loadingProgress = 0;
@@ -290,6 +296,9 @@ class EpubActivity final : public ActivityWithSubactivity {
   EpubDictionaryUi dictUi_;
   OrientationPickerUi orientationPicker_;
   ReaderButtonBindings btnBindings_;
+
+  /** True while a dictionary/annotation entry chord is being held (suppresses fire-on-press turns). */
+  bool anyChordPending() const { return dictUi_.chordPending() || annUi_.chordPending(); }
 
   /**
    * Applies current book settings and rebuilds affected sections.

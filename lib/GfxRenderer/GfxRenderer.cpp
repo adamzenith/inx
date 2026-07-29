@@ -208,6 +208,14 @@ void GfxRenderer::invertScreen() const {
 
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const { display.displayBuffer(refreshMode); }
 
+bool GfxRenderer::isRefreshInFlight() const {
+#ifdef SIMULATOR
+  return false;
+#else
+  return display.isRefreshInFlight();
+#endif
+}
+
 bool GfxRenderer::deviceIsX3() const {
 #ifdef SIMULATOR
   return gpio.deviceIsX3();

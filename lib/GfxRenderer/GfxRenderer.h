@@ -85,6 +85,13 @@ class GfxRenderer {
   int getScreenWidth() const;
   int getScreenHeight() const;
   void displayBuffer(const HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
+
+  /**
+   * True while the panel is still executing an asynchronous refresh (X4 HALF/FULL). Lets an
+   * activity keep processing input instead of blocking. Always false in the simulator.
+   */
+  bool isRefreshInFlight() const;
+
   void invertScreen() const;
   void clearScreen(uint8_t color = 0xFF) const;
   void begin();

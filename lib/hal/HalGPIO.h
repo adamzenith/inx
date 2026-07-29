@@ -97,6 +97,10 @@ class HalGPIO {
   bool wasReleased(uint8_t buttonIndex) const;
   bool wasAnyReleased() const;
   unsigned long getHeldTime() const;
+
+  /** Debounced presses of this button latched since the last update(), consumed by this call. */
+  uint8_t takePressCount(uint8_t buttonIndex);
+
   MotionGesture readMotionGesture(uint8_t orientation, uint8_t mode, uint8_t sensitivity);
 
   void startDeepSleep();

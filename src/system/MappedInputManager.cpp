@@ -57,7 +57,7 @@ MappedInputManager::Button remapDirectional180(const MappedInputManager::Button 
 }
 }  // namespace
 
-bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
+uint8_t MappedInputManager::physicalIndex(const Button button) const {
   const auto frontLayout = static_cast<SystemSetting::FRONT_BUTTON_LAYOUT>(SETTINGS.frontButtonLayout);
   const auto sideLayout = static_cast<SystemSetting::SIDE_BUTTON_LAYOUT>(SETTINGS.sideButtonLayout);
   const auto& front = kFrontLayouts[frontLayout];
@@ -67,26 +67,30 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
 
   switch (effective) {
     case Button::Back:
-      return (gpio.*fn)(front.back);
+      return front.back;
     case Button::Confirm:
-      return (gpio.*fn)(front.confirm);
+      return front.confirm;
     case Button::Left:
-      return (gpio.*fn)(front.left);
+      return front.left;
     case Button::Right:
-      return (gpio.*fn)(front.right);
+      return front.right;
     case Button::Up:
-      return (gpio.*fn)(HalGPIO::BTN_UP);
+      return HalGPIO::BTN_UP;
     case Button::Down:
-      return (gpio.*fn)(HalGPIO::BTN_DOWN);
+      return HalGPIO::BTN_DOWN;
     case Button::Power:
-      return (gpio.*fn)(HalGPIO::BTN_POWER);
+      return HalGPIO::BTN_POWER;
     case Button::PageBack:
-      return (gpio.*fn)(side.pageBack);
+      return side.pageBack;
     case Button::PageForward:
-      return (gpio.*fn)(side.pageForward);
+      return side.pageForward;
   }
 
-  return false;
+  return HalGPIO::BTN_BACK;
+}
+
+bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
+  return (gpio.*fn)(physicalIndex(button));
 }
 
 bool MappedInputManager::wasPressed(const Button button) const { return mapButton(button, &HalGPIO::wasPressed); }
@@ -117,6 +121,15 @@ MappedInputManager::MotionGesture MappedInputManager::readMotionGesture(const ui
 }
 
 unsigned long MappedInputManager::getHeldTime() const { return gpio.getHeldTime(); }
+
+uint8_t MappedInputManager::takePressCount(const Button button) const {
+#ifdef SIMULATOR
+  (void)button;
+  return 0;
+#else
+  return gpio.takePressCount(physicalIndex(button));
+#endif
+}
 
 bool MappedInputManager::rawHalIsPressed(const uint8_t halButtonIndex) const { return gpio.isPressed(halButtonIndex); }
 

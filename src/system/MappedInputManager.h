@@ -43,6 +43,13 @@ class MappedInputManager {
   MotionGesture readMotionGesture(uint8_t orientation, uint8_t mode, uint8_t sensitivity) const;
   unsigned long getHeldTime() const;
 
+  /**
+   * Debounced presses of the mapped physical button latched since the last input update,
+   * consumed by this call. Lets the reader coalesce spam-clicks into one render. Always 0 in
+   * the simulator (callers clamp 0 to 1, preserving one-turn-per-press there).
+   */
+  uint8_t takePressCount(Button button) const;
+
   /** Raw GPIO read (layout + invert still apply to HalGPIO indices). For fixed chords use HalGPIO::BTN_* ). */
   bool rawHalIsPressed(uint8_t halButtonIndex) const;
 
@@ -62,5 +69,6 @@ class MappedInputManager {
   HalGPIO& gpio;
   bool invertDirectionalAxes180_ = false;
 
+  uint8_t physicalIndex(Button button) const;
   bool mapButton(Button button, bool (HalGPIO::*fn)(uint8_t) const) const;
 };

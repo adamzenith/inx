@@ -227,6 +227,9 @@ bool validDateTime(const HalGPIO::DateTime& dt) {
 
 void HalGPIO::begin() {
   inputMgr.begin();
+  if (!inputMgr.startSamplingTask()) {
+    Serial.printf("[%lu] [GPIO] Button sampling task failed to start; falling back to polled input\n", millis());
+  }
   SPI.begin(EPD_SCLK, SPI_MISO, EPD_MOSI, EPD_CS);
   deviceType = detectDeviceTypeWithFingerprint();
   if (deviceIsX4()) {
@@ -248,6 +251,8 @@ bool HalGPIO::wasReleased(uint8_t buttonIndex) const { return inputMgr.wasReleas
 bool HalGPIO::wasAnyReleased() const { return inputMgr.wasAnyReleased(); }
 
 unsigned long HalGPIO::getHeldTime() const { return inputMgr.getHeldTime(); }
+
+uint8_t HalGPIO::takePressCount(const uint8_t buttonIndex) { return inputMgr.takePressCount(buttonIndex); }
 
 HalGPIO::MotionGesture HalGPIO::readMotionGesture(const uint8_t orientation, const uint8_t mode,
                                                   const uint8_t sensitivity) {
@@ -371,6 +376,7 @@ void HalGPIO::startDeepSleep() {
     delay(50);
     inputMgr.update();
   }
+  inputMgr.stopSamplingTask();
 
   esp_deep_sleep_enable_gpio_wakeup(1ULL << InputManager::POWER_BUTTON_PIN, ESP_GPIO_WAKEUP_GPIO_LOW);
 

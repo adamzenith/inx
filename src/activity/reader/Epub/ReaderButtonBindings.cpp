@@ -38,48 +38,76 @@ bool ReaderButtonBindings::handleInput(EpubActivity& act) {
 
 bool ReaderButtonBindings::handleButton(EpubActivity& act, const MappedInputManager::Button button,
                                         PressState& state, const uint8_t shortAction, const uint8_t longAction) {
-  const bool isPressed = act.mappedInput.isPressed(button);
+  // Latched edges: a press+release pair that both landed since the last input update (e.g. a fast
+  // tap during a panel refresh) arrives with pressedEdge && releasedEdge && !held and still fires.
+  const bool pressedEdge = act.mappedInput.wasPressed(button);
+  const bool releasedEdge = act.mappedInput.wasReleased(button);
+  const bool held = act.mappedInput.isPressed(button);
   const unsigned long now = millis();
 
-  if (isPressed && !state.active) {
+  if (pressedEdge && !state.active) {
     state.active = true;
     state.pressStartMs = now;
     state.longFired = false;
-    return false;
+    state.shortFired = false;
+    // No long action bound: nothing to disambiguate, so fire on the press edge and save the
+    // hold-duration latency. Suppressed while a dictionary/annotation chord is forming so the
+    // chord's Left/Right doesn't also turn a page.
+    if (longAction == SystemSetting::BTN_ACTION_NONE && !act.anyChordPending()) {
+      state.shortFired = true;
+      dispatchShort(act, button, shortAction);
+      return true;
+    }
   }
 
-  if (isPressed && state.active && !state.longFired && now - state.pressStartMs >= kLongPressMs) {
+  if (state.active && !state.longFired && !state.shortFired && held && !releasedEdge &&
+      now - state.pressStartMs >= kLongPressMs) {
     state.longFired = true;
     dispatch(act, longAction);
     return true;
   }
 
-  if (!isPressed && state.active) {
+  if (state.active && (releasedEdge || !held)) {
     state.active = false;
-    if (!state.longFired) {
-      dispatch(act, shortAction);
-      return true;
+    if (state.longFired || state.shortFired) {
+      return false;  // already fired on this press - don't also fire short on release
     }
-    return false;  // long already fired on this press - don't also fire short on release
+    dispatchShort(act, button, shortAction);
+    return true;
   }
 
   return false;
 }
 
-void ReaderButtonBindings::dispatch(EpubActivity& act, const uint8_t action) {
+void ReaderButtonBindings::dispatchShort(EpubActivity& act, const MappedInputManager::Button button,
+                                         const uint8_t shortAction) {
+  uint8_t repeat = 1;
+  if (shortAction == SystemSetting::BTN_ACTION_PAGE_NEXT || shortAction == SystemSetting::BTN_ACTION_PAGE_PREVIOUS) {
+    repeat = act.mappedInput.takePressCount(button);
+    if (repeat == 0) repeat = 1;
+    if (repeat > kMaxCoalescedTurns) repeat = kMaxCoalescedTurns;
+  }
+  dispatch(act, shortAction, repeat);
+}
+
+void ReaderButtonBindings::dispatch(EpubActivity& act, const uint8_t action, const uint8_t repeat) {
   switch (action) {
     case SystemSetting::BTN_ACTION_NONE:
       break;
     case SystemSetting::BTN_ACTION_PAGE_NEXT:
+    case SystemSetting::BTN_ACTION_PAGE_PREVIOUS: {
+      const bool forward = action == SystemSetting::BTN_ACTION_PAGE_NEXT;
       act.endPageTimer();
-      act.pageTurn(true);
+      // pageTurn() is pure index math (no I/O) - N coalesced presses collapse into one render.
+      for (uint8_t i = 0; i < repeat; i++) {
+        act.pageTurn(forward);
+      }
+      if (repeat > 1 || act.renderer.isRefreshInFlight()) {
+        act.rapidTurn_ = true;
+      }
       act.lastAutoPageTurnTime = millis();
       break;
-    case SystemSetting::BTN_ACTION_PAGE_PREVIOUS:
-      act.endPageTimer();
-      act.pageTurn(false);
-      act.lastAutoPageTurnTime = millis();
-      break;
+    }
     case SystemSetting::BTN_ACTION_OPEN_SETTINGS:
       act.pauseReadingStats();
       act.toggleSettingsDrawer();

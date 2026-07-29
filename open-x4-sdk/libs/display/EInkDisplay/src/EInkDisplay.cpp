@@ -293,6 +293,7 @@ void EInkDisplay::begin() {
   customLutActive = false;
   inGrayscaleMode = false;
   drawGrayscale = false;
+  _refreshInFlight = false;
   _x3RedRamSynced = false;
   _x3InitialFullSyncsRemaining = _x3Mode ? 1 : 0;
   _x3ForceFullSyncNext = false;
@@ -428,6 +429,14 @@ void EInkDisplay::waitWhileBusy(const char* comment) {
   if (comment) {
     if (Serial) Serial.printf("[%lu]   Wait complete: %s (%lu ms)\n", millis(), comment, millis() - start);
   }
+}
+
+void EInkDisplay::ensureIdle() {
+  if (!_refreshInFlight) {
+    return;
+  }
+  _refreshInFlight = false;  // clear first so a re-entrant call does not wait twice
+  waitWhileBusy("async_refresh");
 }
 
 void EInkDisplay::initDisplayController() {
@@ -647,6 +656,7 @@ void EInkDisplay::swapBuffers() {
 #endif
 
 void EInkDisplay::grayscaleRevert() {
+  ensureIdle();
   if (!inGrayscaleMode) {
     return;
   }
@@ -660,6 +670,7 @@ void EInkDisplay::grayscaleRevert() {
 }
 
 void EInkDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) {
+  ensureIdle();
   if (!lsbBuffer) {
     _x3GrayState.lsbValid = false;
     return;
@@ -689,6 +700,7 @@ void EInkDisplay::copyGrayscaleLsbBuffers(const uint8_t* lsbBuffer) {
 }
 
 void EInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
+  ensureIdle();
   if (!msbBuffer) {
     return;
   }
@@ -719,6 +731,7 @@ void EInkDisplay::copyGrayscaleMsbBuffers(const uint8_t* msbBuffer) {
 }
 
 void EInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer) {
+  ensureIdle();
   if (_x3Mode) {
     copyGrayscaleLsbBuffers(lsbBuffer);
     copyGrayscaleMsbBuffers(msbBuffer);
@@ -736,6 +749,7 @@ void EInkDisplay::copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* 
  * grayscale display.
  */
 void EInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
+  ensureIdle();
   if (_x3Mode) {
     if (!bwBuffer) {
       return;
@@ -772,6 +786,7 @@ void EInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
 #endif
 
 void EInkDisplay::displayBuffer(RefreshMode mode, const bool turnOffScreen) {
+  ensureIdle();
   if (!_x3Mode && !isScreenOn && !turnOffScreen) {
     // Force half refresh if screen is off (non-X3 only)
     mode = HALF_REFRESH;
@@ -909,20 +924,30 @@ void EInkDisplay::displayBuffer(RefreshMode mode, const bool turnOffScreen) {
   swapBuffers();
 #endif
 
+  // HALF/FULL write the identical image to BOTH RAMs before the trigger and run with
+  // CTRL1_BYPASS_RED, so the panel needs nothing more from us: return immediately and let the
+  // caller keep working (input polling, composing the next page). FAST/STRONG_FAST must stay
+  // synchronous because their post-refresh RED re-sync uses the framebuffer as the next diff
+  // baseline. turnOffScreen paths stay synchronous so isScreenOn gating remains truthful.
+  const bool asyncRefresh = !turnOffScreen && (mode == HALF_REFRESH || mode == FULL_REFRESH);
+
   if (mode == STRONG_FAST_REFRESH) {
-    refreshDisplay(FAST_REFRESH, false);
-    refreshDisplay(FAST_REFRESH, false);
-    refreshDisplay(FAST_REFRESH, false);
-    refreshDisplay(FAST_REFRESH, turnOffScreen);
+    triggerRefresh(FAST_REFRESH, false, true);
+    triggerRefresh(FAST_REFRESH, false, true);
+    triggerRefresh(FAST_REFRESH, false, true);
+    triggerRefresh(FAST_REFRESH, turnOffScreen, true);
   } else {
-    refreshDisplay(mode, turnOffScreen);
+    triggerRefresh(mode, turnOffScreen, !asyncRefresh);
   }
 
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
-  // In single buffer mode always sync RED RAM after refresh to prepare for next fast refresh
-  // This ensures RED contains the currently displayed frame for differential comparison
-  setRamArea(0, 0, displayWidth, displayHeight);
-  writeRamBuffer(CMD_WRITE_RAM_RED, frameBuffer, bufferSize);
+  // In single buffer mode sync RED RAM after a FAST refresh to prepare the next differential
+  // comparison. For HALF/FULL this is redundant (RED was written with the same frame above) and
+  // would write RAM while an async refresh is still busy, so it is skipped.
+  if (!asyncRefresh) {
+    setRamArea(0, 0, displayWidth, displayHeight);
+    writeRamBuffer(CMD_WRITE_RAM_RED, frameBuffer, bufferSize);
+  }
 #endif
 }
 
@@ -930,6 +955,7 @@ void EInkDisplay::displayBuffer(RefreshMode mode, const bool turnOffScreen) {
 // Displays only a rectangular region of the frame buffer, preserving the rest of the screen.
 // Requirements: x and w must be byte-aligned (multiples of 8 pixels)
 void EInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const bool turnOffScreen) {
+  ensureIdle();
   if (Serial) Serial.printf("[%lu]   Displaying window at (%d,%d) size (%dx%d)\n", millis(), x, y, w, h);
 
   // Validate bounds
@@ -1004,6 +1030,7 @@ void EInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, 
 
 void EInkDisplay::displayGrayBuffer(const bool turnOffScreen, const unsigned char* lutData, const bool quality,
                                     const bool trackForRevert) {
+  ensureIdle();
   if (_x3Mode) {
     // X3 AA pipeline: LSB->0x10 + MSB->0x13, trigger 0x12 with X3 LUT bank.
     drawGrayscale = false;
@@ -1115,6 +1142,7 @@ void EInkDisplay::displayGrayBufferFastQuality(const bool turnOffScreen) {
 }
 
 void EInkDisplay::prepareQualityGrayscale() {
+  ensureIdle();
   if (_x3Mode || !isScreenOn) {
     return;
   }
@@ -1134,6 +1162,7 @@ void EInkDisplay::prepareQualityGrayscale() {
 // x/w are snapped to byte (8px) boundaries. Falls back to a full refresh on X3 or an empty rect.
 void EInkDisplay::displayGrayBufferWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                                           const unsigned char* lutData) {
+  ensureIdle();
   if (_x3Mode || w == 0 || h == 0) {
     displayGrayBuffer(false, lutData, true);
     return;
@@ -1170,11 +1199,16 @@ void EInkDisplay::displayGrayBufferWindow(uint16_t x, uint16_t y, uint16_t w, ui
 }
 
 void EInkDisplay::refreshDisplay(const RefreshMode mode, const bool turnOffScreen) {
+  ensureIdle();
   if (_x3Mode) {
     displayBuffer(mode, turnOffScreen);
     return;
   }
 
+  triggerRefresh(mode, turnOffScreen, true);
+}
+
+void EInkDisplay::triggerRefresh(const RefreshMode mode, const bool turnOffScreen, const bool waitForCompletion) {
   // Configure Display Update Control 1
   sendCommand(CMD_DISPLAY_UPDATE_CTRL1);
   sendData((mode == FAST_REFRESH || mode == STRONG_FAST_REFRESH)
@@ -1227,12 +1261,19 @@ void EInkDisplay::refreshDisplay(const RefreshMode mode, const bool turnOffScree
 
   sendCommand(CMD_MASTER_ACTIVATION);
 
-  // Wait for display to finish updating
-  if (Serial) Serial.printf("[%lu]   Waiting for display refresh...\n", millis());
-  waitWhileBusy(refreshType);
+  if (waitForCompletion) {
+    // Wait for display to finish updating
+    if (Serial) Serial.printf("[%lu]   Waiting for display refresh...\n", millis());
+    waitWhileBusy(refreshType);
+  } else {
+    // Panel refreshes autonomously from its own RAM; ensureIdle() at the next panel access
+    // waits out the remainder.
+    _refreshInFlight = true;
+  }
 }
 
 void EInkDisplay::setCustomLUT(const bool enabled, const unsigned char* lutData) {
+  ensureIdle();
   if (enabled) {
     if (Serial) Serial.printf("[%lu]   Loading custom LUT...\n", millis());
 
@@ -1263,6 +1304,9 @@ void EInkDisplay::setCustomLUT(const bool enabled, const unsigned char* lutData)
 }
 
 void EInkDisplay::deepSleep() {
+  // Unconditional: also covers the quality-grayscale paths that clear isScreenOn while the
+  // panel is still sequencing, which would otherwise skip the gated power-down wait below.
+  ensureIdle();
   if (Serial) Serial.printf("[%lu]   Preparing display for deep sleep...\n", millis());
 
   // First, power down the display properly

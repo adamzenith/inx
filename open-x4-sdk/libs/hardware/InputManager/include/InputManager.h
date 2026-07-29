@@ -6,6 +6,8 @@
  */
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 class InputManager {
  public:
@@ -14,9 +16,33 @@ class InputManager {
   uint8_t getState();
 
   /**
-   * Updates the button states. Should be called regularly in the main loop.
+   * Consumes the edges latched by the background sampler into the wasPressed()/wasReleased()
+   * masks. Should be called regularly in the main loop. Falls back to sampling inline when the
+   * sampling task is not running (early boot, or task creation failed).
    */
   void update();
+
+  /**
+   * Samples the buttons once and latches debounced press/release edges. Called periodically by
+   * the sampling task; update() calls it inline when no task is running.
+   */
+  void sampleOnce();
+
+  /**
+   * Starts the background sampling task (~10 ms period). Idempotent. Returns false if the task
+   * could not be created, in which case update() keeps sampling inline.
+   */
+  bool startSamplingTask();
+
+  /** Stops the sampling task (deep-sleep entry). Safe to call when not started. */
+  void stopSamplingTask();
+
+  /**
+   * Debounced presses of this button latched since the previous #update(), consumed by this
+   * call. Same lifetime as #wasPressed(): whatever is not drained is discarded by the next
+   * #update().
+   */
+  uint8_t takePressCount(uint8_t buttonIndex);
 
   /** Queue a one-shot press for the next update() (e.g. BLE HID → same path as physical buttons). */
   void injectOneShotPress(uint8_t buttonIndex);
@@ -30,7 +56,8 @@ class InputManager {
   bool isPressed(uint8_t buttonIndex) const;
 
   /**
-   * Returns true if the button went from unpressed to pressed between the last two #update() calls.
+   * Returns true if the button went from unpressed to pressed since the last #update() call.
+   * Edges are latched by the background sampler, so presses during blocking work are not lost.
    *
    * This differs from #isPressed() in that pressing and holding a button will cause this function
    * to return true after the first #update() call, but false on subsequent calls, whereas #isPressed()
@@ -87,16 +114,37 @@ class InputManager {
   static const char* getButtonName(uint8_t buttonIndex);
 
  private:
-  int getButtonFromADC(int adcValue, const int ranges[], int numButtons);
+  static constexpr uint8_t NUM_BUTTONS_TOTAL = 7;
+  static constexpr uint8_t MAX_PRESS_COUNT = 15;
+  static constexpr uint32_t SAMPLE_PERIOD_MS = 10;
+  static constexpr uint32_t SAMPLING_TASK_STACK = 2560;
+  static constexpr UBaseType_t SAMPLING_TASK_PRIO = 3;
 
+  int getButtonFromADC(int adcValue, const int ranges[], int numButtons);
+  static void samplingTaskTrampoline(void* arg);
+
+  // Sampler-owned (written only by sampleOnce; single-byte/word reads elsewhere are atomic on RV32)
   uint8_t currentState;
   uint8_t lastState;
-  uint8_t pressedEvents;
-  uint8_t releasedEvents;
-  uint8_t pendingInjectPress{0};
   unsigned long lastDebounceTime;
   unsigned long buttonPressStart;
   unsigned long buttonPressFinish;
+
+  // Latches shared between the sampler and update(); guarded by latchMux
+  volatile uint8_t pendingPressed{0};
+  volatile uint8_t pendingReleased{0};
+  volatile uint8_t pendingPressCounts[NUM_BUTTONS_TOTAL]{};
+  uint8_t pendingInjectPress{0};
+
+  // Main-task-only consumed state
+  uint8_t pressedEvents;
+  uint8_t releasedEvents;
+  uint8_t consumedPressCounts[NUM_BUTTONS_TOTAL]{};
+  unsigned long heldStart{0};
+  unsigned long heldFinish{0};
+
+  TaskHandle_t samplingTask{nullptr};
+  portMUX_TYPE latchMux = portMUX_INITIALIZER_UNLOCKED;
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];
