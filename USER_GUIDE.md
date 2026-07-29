@@ -141,7 +141,7 @@ The Settings screen allows you to configure the device's behavior. There are a f
 - **Reader Font Family**: Choose the font used for reading:
   - "Literata" (default)
   - "Atkinson Hyperlegible"
-- **Reader Font Size**: Adjust the text size for reading; options are "Tiny", "XX Small", "Extra Small", "Small", "Medium", "Large", or "X Large". The built-in fonts have no faces below 10pt, so "Tiny" and "XX Small" render the same as "Extra Small" on Literata and Atkinson Hyperlegible; install a font from the web font manager to get true 6pt and 8pt text.
+- **Reader Font Size**: Adjust the text size for reading; options are "6pt", "8pt", "9pt", "Extra Small", "Small", "Medium", "Large", or "X Large". The built-in fonts have no faces below 10pt, so "6pt", "8pt", and "9pt" render the same as "Extra Small" on Literata and Atkinson Hyperlegible; install a font from the web font manager to get true 6/8/9pt text.
 - **Reader Line Spacing**: Adjust the spacing between lines; options are "Tight", "Normal", or "Wide".
 - **Reader Screen Margin**: Controls the screen margins in reader mode between 5 and 40 pixels in 5 pixel increments.
 - **Reader Paragraph Alignment**: Set the alignment of paragraphs; options are "Justified" (default), "Left", "Center", or "Right".

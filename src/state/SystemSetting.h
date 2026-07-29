@@ -214,19 +214,22 @@ class SystemSetting {
 
   /**
    * @brief Font size options
-   * @details Values are indices into ReaderSetting's 6–18pt ladder, not point sizes. TINY/EXTRA_EXTRA_SMALL
-   * were prepended, so persisted indices from before that change read two steps smaller; the named constants
-   * kept their point sizes, so code referring to e.g. SMALL still means 12pt. Built-in families have no 6/8pt
-   * faces and fall back to their 10pt face; SD families get true 6/8pt via nearest-point-size matching.
+   * @details Values are indices into ReaderSetting's 6–18pt ladder, not point sizes. Steps below 10pt are
+   * named for their point size because the adjective ladder ran out between 8 and 10; the descriptive names
+   * kept their point sizes, so code referring to e.g. SMALL still means 12pt and the defaults are unaffected.
+   * Adding a step shifts every persisted index above it, so a saved fontSize reads one step smaller per step
+   * inserted below it. Built-in families have no sub-10pt faces and fall back to their 10pt face; SD families
+   * get true 6/8/9pt via nearest-point-size matching.
    */
   enum FONT_SIZE {
-    TINY = 0,               ///< Tiny font (6pt; built-ins fall back to 10pt)
-    EXTRA_EXTRA_SMALL = 1,  ///< Extra extra small font (8pt; built-ins fall back to 10pt)
-    EXTRA_SMALL = 2,        ///< Extra small font (10pt)
-    SMALL = 3,              ///< Small font (12pt)
-    MEDIUM = 4,             ///< Medium font (14pt)
-    LARGE = 5,              ///< Large font (16pt)
-    EXTRA_LARGE = 6,        ///< Extra large font (18pt)
+    PT_6 = 0,         ///< 6pt (built-ins fall back to 10pt)
+    PT_8 = 1,         ///< 8pt (built-ins fall back to 10pt)
+    PT_9 = 2,         ///< 9pt (built-ins fall back to 10pt)
+    EXTRA_SMALL = 3,  ///< Extra small font (10pt)
+    SMALL = 4,        ///< Small font (12pt)
+    MEDIUM = 5,       ///< Medium font (14pt)
+    LARGE = 6,        ///< Large font (16pt)
+    EXTRA_LARGE = 7,  ///< Extra large font (18pt)
     FONT_SIZE_COUNT
   };
 
