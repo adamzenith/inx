@@ -66,6 +66,8 @@ class ChapterHtmlSlimParser {
   int dropCapDepth = INT_MAX;
   bool dropCapConsumeWholeContainer = false;
   uint8_t dropCapLineCount = 3;
+  /** True once a ::first-letter (pseudo) drop cap has been applied in this chapter; gates it to one. */
+  bool sectionPseudoDropCapUsed = false;
 
   char partWordBuffer[MAX_WORD_SIZE + 1] = {};
   int partWordBufferIndex = 0;
