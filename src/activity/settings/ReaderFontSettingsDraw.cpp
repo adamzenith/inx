@@ -11,6 +11,7 @@
 #include <cmath>
 #include <string>
 
+#include "state/SystemSetting.h"
 #include "system/Fonts.h"
 
 namespace {
@@ -64,8 +65,8 @@ void drawFontSizeSliderRowValue(const GfxRenderer& renderer, uint8_t fontFamily,
                                 int valueAreaLeft, int valueAreaRight, int itemY, int itemHeight, bool rowSelected) {
   (void)fontFamily;
   const bool ink = !rowSelected;
-  const uint8_t sel = std::min<uint8_t>(fontSizeIndex, 4);
-  constexpr int kN = 5;
+  constexpr int kN = SystemSetting::FONT_SIZE_COUNT;
+  const uint8_t sel = std::min<uint8_t>(fontSizeIndex, kN - 1);
   constexpr int fidSel = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
   constexpr int fidMin = ATKINSON_HYPERLEGIBLE_8_FONT_ID;
   constexpr int fidMax = ATKINSON_HYPERLEGIBLE_12_FONT_ID;

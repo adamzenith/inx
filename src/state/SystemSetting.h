@@ -214,13 +214,19 @@ class SystemSetting {
 
   /**
    * @brief Font size options
+   * @details Values are indices into ReaderSetting's 6–18pt ladder, not point sizes. TINY/EXTRA_EXTRA_SMALL
+   * were prepended, so persisted indices from before that change read two steps smaller; the named constants
+   * kept their point sizes, so code referring to e.g. SMALL still means 12pt. Built-in families have no 6/8pt
+   * faces and fall back to their 10pt face; SD families get true 6/8pt via nearest-point-size matching.
    */
   enum FONT_SIZE {
-    EXTRA_SMALL = 0,  ///< Extra small font
-    SMALL = 1,        ///< Small font
-    MEDIUM = 2,       ///< Medium font
-    LARGE = 3,        ///< Large font
-    EXTRA_LARGE = 4,  ///< Extra large font
+    TINY = 0,               ///< Tiny font (6pt; built-ins fall back to 10pt)
+    EXTRA_EXTRA_SMALL = 1,  ///< Extra extra small font (8pt; built-ins fall back to 10pt)
+    EXTRA_SMALL = 2,        ///< Extra small font (10pt)
+    SMALL = 3,              ///< Small font (12pt)
+    MEDIUM = 4,             ///< Medium font (14pt)
+    LARGE = 5,              ///< Large font (16pt)
+    EXTRA_LARGE = 6,        ///< Extra large font (18pt)
     FONT_SIZE_COUNT
   };
 

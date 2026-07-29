@@ -2092,7 +2092,8 @@ void LocalServer::handleSettingsUpdate() const {
       READER_SETTINGS.fontFamily = (uint8_t)value;
       readerChanged = true;
     } else if (strcmp(key, "fontSize") == 0) {
-      READER_SETTINGS.fontSize = (uint8_t)value;
+      uint8_t v = (uint8_t)value;
+      READER_SETTINGS.fontSize = (v < SystemSetting::FONT_SIZE_COUNT) ? v : SystemSetting::MEDIUM;
       readerChanged = true;
     } else if (strcmp(key, "lineHeight") == 0) {
       uint8_t v = (uint8_t)value;
