@@ -49,6 +49,13 @@ class ParsedText {
 
   uint16_t leftIndentWidth = 0;
   uint16_t leftIndentLineCount = 0;
+  /**
+   * True while a paragraph is mid-flight: long paragraphs are laid out in several partial passes to cap memory
+   * (see STREAMING_TEXTBLOCK_WORD_LIMIT), and each of those leaves the words of the trailing line in the block
+   * for the parser to keep appending to. Those later passes must not resolve a fresh first-line indent, or the
+   * indent reappears in the middle of the paragraph.
+   */
+  bool paragraphContinues_ = false;
   void applyParagraphIndent(const GfxRenderer& renderer, int fontId);
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth, int spaceWidth,
                                         std::vector<uint16_t>& wordWidths, int dropIndentW, int dropIndentLines);
@@ -84,6 +91,7 @@ class ParsedText {
     cssTextIndentPx = -1;
     leftIndentWidth = 0;
     leftIndentLineCount = 0;
+    paragraphContinues_ = false;
   }
 
   void setLeftIndent(uint16_t width, uint16_t lineCount) {
