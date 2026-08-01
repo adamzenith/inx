@@ -52,6 +52,9 @@ class ParsedText {
 
   uint16_t leftIndentWidth = 0;
   uint16_t leftIndentLineCount = 0;
+  /** Set while a streamed paragraph is mid-flight, so continuation passes don't re-resolve the first-line indent. */
+  bool paragraphContinues_ = false;
+
   void applyParagraphIndent(const GfxRenderer& renderer, int fontId);
   std::vector<size_t> computeLineBreaks(const GfxRenderer& renderer, int fontId, int pageWidth, int spaceWidth,
                                         std::vector<uint16_t>& wordWidths, int dropIndentW, int dropIndentLines);
@@ -87,6 +90,7 @@ class ParsedText {
     cssTextIndentPx = -1;
     leftIndentWidth = 0;
     leftIndentLineCount = 0;
+    paragraphContinues_ = false;
   }
 
   void setLeftIndent(uint16_t width, uint16_t lineCount) {

@@ -319,6 +319,10 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   for (size_t i = 0; i < lineCount; ++i) {
     extractLine(i, pageWidth, spaceWidth, wordWidths, lineBreakIndices, joinPreviousSnapshot, processLine);
   }
+
+  // A partial pass leaves the trailing line's words for the parser to keep appending to; only a full pass ends
+  // the paragraph.
+  paragraphContinues_ = !includeLastLine;
 }
 
 std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& renderer, const int fontId) {
@@ -544,6 +548,11 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
 
 void ParsedText::applyParagraphIndent(const GfxRenderer& renderer, const int fontId) {
   if (words.empty()) {
+    return;
+  }
+
+  // Mid-paragraph continuation: keep the remaining indent state instead of resolving a fresh first-line indent.
+  if (paragraphContinues_) {
     return;
   }
 
