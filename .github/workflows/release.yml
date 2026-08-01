@@ -3,10 +3,21 @@ on:
   push:
     tags:
       - '*'
+  # Manual fallback for when a tag cannot be pushed directly (restricted push access, or cutting a release
+  # from the web UI). Creates the tag at the checked-out commit as part of publishing the release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create and release, e.g. 1.0.21-fork'
+        required: true
+        type: string
 
 jobs:
   build-release:
     runs-on: ubuntu-latest
+    env:
+      # A tag push already carries the name in github.ref_name; a manual run supplies it as an input.
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     # Needed for the Publish Release step; the default GITHUB_TOKEN is read-only in many repos.
     permissions:
       contents: write
@@ -35,7 +46,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Inx-${{ github.ref_name }}
+          name: Inx-${{ env.RELEASE_TAG }}
           path: |
             .pio/build/gh_release/bootloader.bin
             .pio/build/gh_release/firmware.bin
@@ -50,6 +61,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: .pio/build/gh_release/firmware.bin
+          # Explicit on both paths: on a manual run this creates the tag at the checked-out commit.
+          tag_name: ${{ env.RELEASE_TAG }}
           # Drafts and prereleases are invisible to /releases/latest.
           draft: false
           prerelease: false
