@@ -3,8 +3,11 @@ on:
   push:
     tags:
       - '*'
-  # Manual fallback for when a tag cannot be pushed directly (restricted push access, or cutting a release
-  # from the web UI). Creates the tag at the checked-out commit as part of publishing the release.
+    # Pushing e.g. release/1.0.21-fork cuts that release. For when tags cannot be pushed directly but
+    # branches can; the tag itself is created server-side by the Publish Release step.
+    branches:
+      - 'release/**'
+  # Manual fallback, e.g. cutting a release from the Actions tab.
   workflow_dispatch:
     inputs:
       tag:
@@ -15,13 +18,31 @@ on:
 jobs:
   build-release:
     runs-on: ubuntu-latest
-    env:
-      # A tag push already carries the name in github.ref_name; a manual run supplies it as an input.
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     # Needed for the Publish Release step; the default GITHUB_TOKEN is read-only in many repos.
     permissions:
       contents: write
     steps:
+      # Every trigger carries the tag name somewhere different. Read them from the environment rather than
+      # interpolating into the script, so a branch or input name cannot inject shell.
+      - name: Resolve release tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG}" ]; then
+            TAG="${INPUT_TAG}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="${GITHUB_REF#refs/heads/release/}"
+          fi
+          if [ -z "${TAG}" ] || [ "${TAG}" = "${GITHUB_REF}" ]; then
+            echo "Could not determine a release tag from ${GITHUB_REF}" >&2
+            exit 1
+          fi
+          echo "RELEASE_TAG=${TAG}" >> "${GITHUB_ENV}"
+          echo "Releasing as ${TAG}"
+
       - uses: actions/checkout@v6
         with:
           submodules: recursive
