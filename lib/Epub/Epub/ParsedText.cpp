@@ -319,6 +319,10 @@ void ParsedText::layoutAndExtractLines(const GfxRenderer& renderer, const int fo
   for (size_t i = 0; i < lineCount; ++i) {
     extractLine(i, pageWidth, spaceWidth, wordWidths, lineBreakIndices, joinPreviousSnapshot, processLine);
   }
+
+  // A partial pass keeps the trailing line's words and the parser goes on appending to this same block, so the
+  // paragraph is still open. A full pass ends it, leaving the block free to start a fresh (indented) paragraph.
+  paragraphContinues_ = !includeLastLine;
 }
 
 std::vector<uint16_t> ParsedText::calculateWordWidths(const GfxRenderer& renderer, const int fontId) {
@@ -544,6 +548,12 @@ std::vector<size_t> ParsedText::computeLineBreaks(const GfxRenderer& renderer, c
 
 void ParsedText::applyParagraphIndent(const GfxRenderer& renderer, const int fontId) {
   if (words.empty()) {
+    return;
+  }
+
+  // Continuation of a paragraph that a previous streaming pass left open: keep whatever indent state is left
+  // rather than resolving a fresh first-line indent for what is really the middle of the paragraph.
+  if (paragraphContinues_) {
     return;
   }
 
