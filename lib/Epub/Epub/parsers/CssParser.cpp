@@ -1954,8 +1954,8 @@ bool CssParser::hasFirstLetterDropCapHint(const std::string& elementTagLower, co
     }
     // Only a substantial enlargement reads as a drop cap; weight/style/line-height on the first
     // letter is emphasis, not a drop cap, and a small font-size bump is too.
-    const auto fontSizeIt = rule.properties.find("font-size");
-    if (fontSizeIt != rule.properties.end() && parseFontSizeValueToEm(fontSizeIt->second) >= kDropCapMinFontSizeEm) {
+    const std::string* fontSize = rulePropertyValue(rule, "font-size");
+    if (fontSize != nullptr && parseFontSizeValueToEm(*fontSize) >= kDropCapMinFontSizeEm) {
       return true;
     }
   }
