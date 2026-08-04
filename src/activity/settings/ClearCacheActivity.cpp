@@ -37,12 +37,12 @@ void ClearCacheActivity::taskTrampoline(void* param) {
 
 void ClearCacheActivity::onEnter() {
   ActivityWithSubactivity::onEnter();
-
+  
   renderingMutex = xSemaphoreCreateMutex();
   state = WARNING;
   selectedGroup = 0;
   updateRequired = true;
-
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   xTaskCreate(&ClearCacheActivity::taskTrampoline, "ClearCacheActivityTask", 4096, this, 1, &displayTaskHandle);
 }
 
