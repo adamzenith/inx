@@ -14,6 +14,19 @@
 #include <new>
 #include <string>
 
+#ifdef SIMULATOR
+#include <Epub.h>
+#include <Epub/Page.h>
+#include <Epub/PageWordIndex.h>
+#include <Epub/Section.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+
+#include "activity/reader/Epub/EpubActivity.h"
+#endif
+
 #include "activity/OpdsServerListActivity.h"
 #include "activity/network/CalibreConnectActivity.h"
 #include "activity/network/HotspotActivity.h"
@@ -270,10 +283,103 @@ bool handleGlobalPowerRefresh() {
 /**
  * @brief Set up application.
  */
+#ifdef SIMULATOR
+/**
+ * Headless native repro driver, gated by FOOTNOTE_SELFTEST_BOOK (a path relative to CROSSPOINT_SIM_SD).
+ * Walks every spine item of a real book end-to-end (fresh parse -> section cache write -> read back
+ * every page), the same sequence EpubActivity::pageTurn()/loadCurrentSection() drives on real "next
+ * page/chapter" navigation - so a real crash here, under ASan/UBSan, gives an exact file:line instead
+ * of a stripped ESP32 panic dump. Not part of the shipped app; exits the process when done.
+ */
+void runFootnoteSelftestIfRequested() {
+  const char* bookPathC = std::getenv("FOOTNOTE_SELFTEST_BOOK");
+  if (!bookPathC) {
+    return;
+  }
+  const std::string bookPath = bookPathC;
+  const bool useFootnotes = std::getenv("FOOTNOTE_SELFTEST_USE_FOOTNOTES") != nullptr;
+
+  auto epub = std::make_unique<Epub>(bookPath);
+  if (!epub->load(true)) {
+    printf("SELFTEST FAILED: epub->load() returned false for %s\n", bookPath.c_str());
+    std::exit(2);
+  }
+  epub->clearCache();
+  if (!epub->load(true)) {
+    printf("SELFTEST FAILED: epub->load() (post clearCache) returned false\n");
+    std::exit(2);
+  }
+
+  EpubActivity act(renderer, input, std::move(epub), [] {}, [] {});
+  act.currentSpineIndex = 0;
+  act.nextPageNumber = 0;
+
+  const int totalSpines = act.epub->getSpineItemsCount();
+  printf("SELFTEST: book loaded, spines=%d, driving via EpubActivity (footnotes=%d)\n", totalSpines, useFootnotes);
+  fflush(stdout);
+
+  int pagesWalked = 0;
+  int footnotesOpened = 0;
+  int lastSpine = -1;
+  while (act.currentSpineIndex < totalSpines) {
+    if (!act.section) {
+      act.loadCurrentSection(false);
+      if (!act.section) {
+        printf("SELFTEST FAILED: loadCurrentSection produced no section, spine=%d\n", act.currentSpineIndex);
+        std::exit(3);
+      }
+    }
+    if (act.currentSpineIndex != lastSpine) {
+      lastSpine = act.currentSpineIndex;
+      printf("SELFTEST: === spine %d/%d pages=%d ===\n", act.currentSpineIndex, totalSpines, act.section->pageCount);
+      fflush(stdout);
+    }
+    ++pagesWalked;
+
+    if (useFootnotes) {
+      const ViewportInfo info = act.calculateViewport();
+      const int fontId = info.fontId;
+      const int headerFontId = FontManager::getNextFont(fontId);
+      auto page = act.section->loadPageFromSectionFile();
+      if (page) {
+        std::vector<PageWordHit> hits;
+        buildPageWordIndex(*page, act.renderer, fontId, headerFontId, info.totalMarginLeft, info.totalMarginTop,
+                           hits, nullptr, false);
+        const bool hasFootnote =
+            std::any_of(hits.begin(), hits.end(), [](const PageWordHit& h) { return !h.footnoteTarget.empty(); });
+        if (hasFootnote) {
+          ++footnotesOpened;
+          printf("SELFTEST:   page %d has a footnote marker - opening it (#%d)\n", act.section->currentPage,
+                 footnotesOpened);
+          fflush(stdout);
+          act.footnoteUi_.enter(act);
+          if (act.footnoteUi_.isActive() && act.footnoteUi_.debugWordCountForSelftest() > 0) {
+            act.footnoteUi_.debugResolveFootnoteBodyForSelftest(act);
+          }
+          act.footnoteUi_.exit(act);
+          printf("SELFTEST:   footnote closed, resuming\n");
+          fflush(stdout);
+        }
+      }
+    }
+
+    act.pageTurn(true);
+  }
+
+  printf("SELFTEST: ALL DONE - no crash across %d spines, %d pages walked, %d footnotes opened\n", totalSpines,
+        pagesWalked, footnotesOpened);
+  std::exit(0);
+}
+#endif
+
 void setup() {
   t1 = millis();
   gpio.begin();
   setupDisplayAndFonts();
+
+#ifdef SIMULATOR
+  runFootnoteSelftestIfRequested();
+#endif
 
   if (gpio.isUsbConnected()) {
     Serial.begin(115200);

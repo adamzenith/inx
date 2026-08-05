@@ -785,6 +785,18 @@ void EpubActivity::loop() {
     return;
   }
 
+  if (footnoteUi_.isActive()) {
+    footnoteUi_.handleInput(*this);
+    if (updateRequired && footnoteUi_.isActive()) {
+      updateRequired = false;
+      footnoteUi_.repaint(*this);
+    } else if (updateRequired) {
+      updateRequired = false;
+      renderScreen(true);
+    }
+    return;
+  }
+
   if (orientationPicker_.isActive()) {
     orientationPicker_.handleInput(*this);
     // handleInput() already repaints inline (popup redraw on Up/Down, renderScreen(true) on Back) -
@@ -1914,6 +1926,8 @@ void EpubActivity::renderContents(std::unique_ptr<Page> page, const int oriented
     annUi_.drawUiOverlay(*this);
   } else if (dictUi_.isActive()) {
     dictUi_.drawUiOverlay(*this);
+  } else if (footnoteUi_.isActive()) {
+    footnoteUi_.drawUiOverlay(*this);
   } else if (!annUi_.storedRanges().empty()) {
     annUi_.drawStoredOverlay(*this);
   } else if (highQuality && bwStored) {

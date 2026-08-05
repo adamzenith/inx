@@ -15,6 +15,7 @@
 
 #include "EpubAnnotationUi.h"
 #include "EpubDictionaryUi.h"
+#include "EpubFootnoteUi.h"
 #include "EpubReadingStats.h"
 #include "MenuDrawer.h"
 #include "OrientationPickerUi.h"
@@ -27,6 +28,10 @@
 #include "state/BookProgress.h"
 #include "state/BookSetting.h"
 #include "system/ScreenComponents.h"
+
+#ifdef SIMULATOR
+void runFootnoteSelftestIfRequested();
+#endif
 
 struct ViewportInfo {
   int totalMarginTop;
@@ -47,10 +52,16 @@ struct ViewportInfo {
 class EpubActivity final : public ActivityWithSubactivity {
   friend class EpubAnnotationUi;
   friend class EpubDictionaryUi;
+  friend class EpubFootnoteUi;
   friend class OrientationPickerUi;
   friend class PresetPickerUi;
   friend class QuickActionsMenuUi;
   friend class ReaderButtonBindings;
+#ifdef SIMULATOR
+  // Diagnostic-only: lets env:selftest's headless repro driver (src/main.cpp) walk chapters and drive
+  // the footnote overlay directly, without a real EpubActivity/Activity-framework boot sequence.
+  friend void ::runFootnoteSelftestIfRequested();
+#endif
 
  public:
   /**
@@ -304,6 +315,7 @@ class EpubActivity final : public ActivityWithSubactivity {
 
   EpubAnnotationUi annUi_;
   EpubDictionaryUi dictUi_;
+  EpubFootnoteUi footnoteUi_;
   OrientationPickerUi orientationPicker_;
   PresetPickerUi presetPicker_;
   QuickActionsMenuUi quickActionsUi_;

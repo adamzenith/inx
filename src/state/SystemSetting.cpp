@@ -213,7 +213,8 @@ const char* SystemSetting::readerButtonActionLabel(const uint8_t action) {
                                         "Table of Contents",
                                         "Change Orientation",
                                         "Apply Preset",
-                                        "Quick Actions"};
+                                        "Quick Actions",
+                                        "Footnotes"};
   if (action >= SystemSetting::READER_BUTTON_ACTION_COUNT) {
     return "None";
   }
