@@ -521,6 +521,8 @@ void ChapterHtmlSlimParser::resetStructuralStateForParsePass() {
   underlineUntilDepth = INT_MAX;
   superscriptUntilDepth = INT_MAX;
   subscriptUntilDepth = INT_MAX;
+  footnoteLinkUntilDepth = INT_MAX;
+  currentFootnoteTarget.clear();
   listNoIndentDepths_.clear();
   inHeader = false;
   inDropCap = false;
@@ -941,6 +943,7 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
 
   const bool smallCapsActive = !smallCapsStack.empty() && smallCapsStack.back();
   const bool underlineActive = underlineUntilDepth < depth;
+  const bool footnoteActive = footnoteLinkUntilDepth < depth;
   uint8_t verticalAlign = TextBlock::BASELINE;
   const bool superscriptActive = superscriptUntilDepth < depth;
   const bool subscriptActive = subscriptUntilDepth < depth;
@@ -958,7 +961,8 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
                             verticalAlign,
                             static_cast<int16_t>(std::max<int>(
                                 std::numeric_limits<int16_t>::min(),
-                                std::min<int>(std::numeric_limits<int16_t>::max(), currentInlineXOffsetPx))));
+                                std::min<int>(std::numeric_limits<int16_t>::max(), currentInlineXOffsetPx))),
+                            footnoteActive ? currentFootnoteTarget : std::string());
   nextWordJoinsPrevious = false;
   partWordBufferIndex = 0;
 }
@@ -1300,16 +1304,85 @@ void ChapterHtmlSlimParser::applyDropCapHint(const XML_Char* name, const std::st
                               : css().getFirstLetterDropCapLineCount(tagLower, classAttr, idAttr, styleAttr);
 }
 
-void ChapterHtmlSlimParser::applyInlineFormattingTags(const XML_Char* name) {
+void ChapterHtmlSlimParser::applyInlineFormattingTags(const XML_Char* name, const XML_Char** atts) {
   if (matches(name, BOLD_TAGS, NUM_BOLD_TAGS)) {
     boldUntilDepth = depth;
   }
   if (strcmp(name, "a") == 0) {
     underlineUntilDepth = depth;
+    const std::string footnoteTarget = classifyFootnoteLink(atts);
+    if (!footnoteTarget.empty()) {
+      footnoteLinkUntilDepth = depth;
+      currentFootnoteTarget = footnoteTarget;
+    }
   }
   if (matches(name, ITALIC_TAGS, NUM_ITALIC_TAGS)) {
     italicUntilDepth = depth;
   }
+}
+
+std::string ChapterHtmlSlimParser::classifyFootnoteLink(const XML_Char** atts) const {
+  if (atts == nullptr) {
+    return "";
+  }
+  std::string href;
+  std::string epubType;
+  std::string classAttr;
+  std::string role;
+  for (int i = 0; atts[i]; i += 2) {
+    if (strcmp(atts[i], "href") == 0) {
+      href = atts[i + 1];
+    } else if (strcmp(atts[i], "epub:type") == 0) {
+      epubType = atts[i + 1];
+    } else if (strcmp(atts[i], "class") == 0) {
+      classAttr = atts[i + 1];
+    } else if (strcmp(atts[i], "role") == 0) {
+      role = atts[i + 1];
+    }
+  }
+  if (href.empty()) {
+    return "";
+  }
+  if (startsWithAsciiInsensitive(href, "http:") || startsWithAsciiInsensitive(href, "https:") ||
+      startsWithAsciiInsensitive(href, "mailto:")) {
+    return "";
+  }
+  const size_t hashPos = href.find('#');
+  if (hashPos == std::string::npos || hashPos + 1 >= href.size()) {
+    // No fragment to jump to (e.g. a link to a whole other file/TOC entry) - not resolvable as a footnote.
+    return "";
+  }
+  const std::string hrefPath = href.substr(0, hashPos);
+  const std::string fragmentId = href.substr(hashPos + 1);
+
+  // High-confidence: real EPUB3 semantic markup - either the epub:type/class convention, or the DPUB-ARIA
+  // "role" convention (role="doc-noteref"), which real-world books (e.g. modern Penguin Random House
+  // EPUB3 output) use far more often in practice than epub:type="noteref".
+  const bool highConfidence = containsAsciiInsensitive(epubType, "noteref") ||
+                              containsAsciiInsensitive(role, "noteref") ||
+                              containsAsciiInsensitive(classAttr, "footnote") ||
+                              containsAsciiInsensitive(classAttr, "noteref") ||
+                              containsAsciiInsensitive(classAttr, "fnref");
+
+  // Fallback (no semantic markup at all): restricted to fragment IDs that look note-related, NOT "any
+  // #fragment anchor". Real EPUB3 books commonly ship print-page-correspondence anchors like
+  // href="chapter.xhtml#page_341" by the thousands - treating every such link as a footnote candidate
+  // would swamp real footnotes in false positives.
+  const bool fallbackMatch = !highConfidence && (containsAsciiInsensitive(fragmentId, "footnote") ||
+                                                 containsAsciiInsensitive(fragmentId, "endnote") ||
+                                                 containsAsciiInsensitive(fragmentId, "note") ||
+                                                 startsWithAsciiInsensitive(fragmentId, "fn"));
+  if (!highConfidence && !fallbackMatch) {
+    return "";
+  }
+
+  std::string resolvedPath;
+  if (!hrefPath.empty()) {
+    const std::string base = internalPath.empty() ? filepath : internalPath;
+    resolvedPath = FsHelpers::resolveRelativePath(base, hrefPath);
+  }
+
+  return (highConfidence ? std::string("S:") : std::string("F:")) + resolvedPath + "#" + fragmentId;
 }
 
 /**
@@ -1820,7 +1893,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     return;
   }
 
-  self->applyInlineFormattingTags(name);
+  self->applyInlineFormattingTags(name, atts);
 
   if (isHeaderTag) {
     self->flushPartWordBuffer();
@@ -1883,8 +1956,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
       if (tagLower == "ul" || tagLower == "ol") {
         self->listNoIndentDepths_.push_back(self->depth);
-      }
-      if (tagLower == "ul") {
         self->ulBulletVisibleStack.push_back(!self->css().isListStyleNone(tagLower, classAttr, idAttr, styleAttr));
         self->ulBulletVisibleDepths.push_back(self->depth);
       } else if (tagLower == "li") {
@@ -2258,6 +2329,10 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   if (self->underlineUntilDepth == self->depth) self->underlineUntilDepth = INT_MAX;
   if (self->superscriptUntilDepth == self->depth) self->superscriptUntilDepth = INT_MAX;
   if (self->subscriptUntilDepth == self->depth) self->subscriptUntilDepth = INT_MAX;
+  if (self->footnoteLinkUntilDepth == self->depth) {
+    self->footnoteLinkUntilDepth = INT_MAX;
+    self->currentFootnoteTarget.clear();
+  }
 
   if (self->dropCapDepth == self->depth) {
     if (self->inDropCap && self->partWordBufferIndex > 0) {

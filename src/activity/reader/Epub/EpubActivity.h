@@ -15,6 +15,7 @@
 
 #include "EpubAnnotationUi.h"
 #include "EpubDictionaryUi.h"
+#include "EpubFootnoteUi.h"
 #include "EpubReadingStats.h"
 #include "MenuDrawer.h"
 #include "OrientationPickerUi.h"
@@ -27,6 +28,10 @@
 #include "state/BookProgress.h"
 #include "state/BookSetting.h"
 #include "system/ScreenComponents.h"
+
+#ifdef SIMULATOR
+void runFootnoteSelftestIfRequested();
+#endif
 
 struct ViewportInfo {
   int totalMarginTop;
@@ -47,10 +52,16 @@ struct ViewportInfo {
 class EpubActivity final : public ActivityWithSubactivity {
   friend class EpubAnnotationUi;
   friend class EpubDictionaryUi;
+  friend class EpubFootnoteUi;
   friend class OrientationPickerUi;
   friend class PresetPickerUi;
   friend class QuickActionsMenuUi;
   friend class ReaderButtonBindings;
+#ifdef SIMULATOR
+  // Diagnostic-only: lets env:selftest's headless repro driver (src/main.cpp) walk chapters and drive
+  // the footnote overlay directly, without a real EpubActivity/Activity-framework boot sequence.
+  friend void ::runFootnoteSelftestIfRequested();
+#endif
 
  public:
   /**
@@ -184,7 +195,7 @@ class EpubActivity final : public ActivityWithSubactivity {
   void renderStatusBar(int orientedMarginRight, int orientedMarginBottom, int orientedMarginLeft) const;
 
   /**
-   * Draws the reading-guide overlay when enabled: Grid (vertical lines at 1/3 and 2/3 of the content width)
+   * Draws the reading-guide overlay when enabled: Grid (vertical lines at 25% and 75% of the content width)
    * or Notebook (one horizontal ruled line under each actual text line on the page, so blank space - end of
    * page, gaps around images - never gets a stray line and every line lands exactly under real text).
    * Pure overlay — does not affect layout or page cache.
@@ -304,6 +315,7 @@ class EpubActivity final : public ActivityWithSubactivity {
 
   EpubAnnotationUi annUi_;
   EpubDictionaryUi dictUi_;
+  EpubFootnoteUi footnoteUi_;
   OrientationPickerUi orientationPicker_;
   PresetPickerUi presetPicker_;
   QuickActionsMenuUi quickActionsUi_;

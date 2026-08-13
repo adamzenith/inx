@@ -311,6 +311,7 @@ class SystemSetting {
     BTN_ACTION_CHANGE_ORIENTATION,
     BTN_ACTION_APPLY_PRESET,
     BTN_ACTION_QUICK_ACTIONS,
+    BTN_ACTION_FOOTNOTE,
     READER_BUTTON_ACTION_COUNT
   };
 
@@ -435,7 +436,7 @@ class SystemSetting {
   uint8_t libraryMode = LIBRARY_GRID;              ///< Library browser display mode
   uint8_t libraryViewMode = LIBRARY_VIEW_FOLDERS;  ///< Last Library browser content view
   uint8_t libraryShelfEnabled = 0;                 ///< Allow cover shelf view in Library
-  /** Hide on-screen button-hint bar on tabbed hub screens (experienced users). */
+  /** Hide on-screen button-hint chrome everywhere (hub, settings, reader overlays, side buttons). */
   uint8_t hideButtonHints = 0;
   /** How many recent books to show on the Recent hub (1–8). */
   uint8_t recentVisibleCount = 9;
