@@ -412,7 +412,7 @@ void EpubActivity::preloadSection(int spineIndex) {
  */
 void EpubActivity::schedulePreloadIfOnLastPage() {
   pendingPreloadSpine_ = -1;
-  if (!epub || !section || section->pageCount <= 0) return;
+  if (!epub || !section || section->pageCount == 0) return;
   if (menuDrawerVisible || settingsDrawerVisible || annUi_.isActive() || dictUi_.isActive()) return;
   if (section->currentPage != section->pageCount - 1) return;
 
