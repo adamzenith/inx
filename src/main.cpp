@@ -9,6 +9,9 @@
 #include <HalGPIO.h>
 #include <SDCardManager.h>
 #include <SPI.h>
+#ifndef SIMULATOR
+#include <esp_ota_ops.h>
+#endif
 
 #include <cstring>
 #include <new>
@@ -57,6 +60,9 @@ void verifyPowerButtonDuration();
 void waitForPowerRelease();
 void normalizeUnavailableClockSettings();
 void enterDeepSleep();
+#ifndef SIMULATOR
+void confirmFirmwareHealthy();
+#endif
 void onGoToReader(const std::string& path);
 void onSelectBook(const std::string& path);
 void onGoToRecent();
@@ -240,6 +246,11 @@ void normalizeUnavailableClockSettings() {
 }
 
 void enterDeepSleep() {
+#ifndef SIMULATOR
+  // Reaching a normal sleep proves this build works; waking from deep sleep is a reset, which would otherwise
+  // count as a failed boot and roll back.
+  confirmFirmwareHealthy();
+#endif
   normalizeUnavailableClockSettings();
   switchTo<SleepActivity>(render, input);
   display.deepSleep();
@@ -247,6 +258,23 @@ void enterDeepSleep() {
 }
 
 #ifndef SIMULATOR
+/**
+ * Arduino's initArduino() marks a freshly OTA-installed image valid before setup() even runs, which defeats the
+ * bootloader's rollback. Deferring that lets confirmFirmwareHealthy() decide instead: if the new build resets
+ * (crash, watchdog, panic) before it is confirmed, the bootloader boots the previous firmware again. With a
+ * bootloader built without rollback support this is a harmless no-op.
+ */
+extern "C" bool verifyRollbackLater() { return true; }
+
+constexpr unsigned long kFirmwareHealthyAfterMs = 30000;
+
+void confirmFirmwareHealthy() {
+  static bool confirmed = false;
+  if (confirmed) return;
+  confirmed = true;
+  esp_ota_mark_app_valid_cancel_rollback();
+}
+
 TaskHandle_t mainLoopTask = nullptr;
 
 /**
@@ -303,8 +331,16 @@ void setup() {
 
   if (gpio.isUsbConnected()) {
     Serial.begin(115200);
+#ifndef SIMULATOR
+    // Never block on logging: with a host attached but no terminal reading, a full TX buffer would
+    // otherwise stall every Serial.printf for up to 100ms.
+    Serial.setTxTimeoutMs(0);
+#endif
+#ifdef INX_WAIT_FOR_SERIAL
+    // Debug builds only: waiting for a host here otherwise delays every boot on a charger by up to 3s.
     unsigned long start = millis();
     while (!Serial && (millis() - start) < 3000) delay(10);
+#endif
   }
 
   sdCardAvailable = SdMan.begin();
@@ -335,6 +371,11 @@ void setup() {
  * @brief All activity loop.
  */
 void loop() {
+#ifndef SIMULATOR
+  if (millis() >= kFirmwareHealthyAfterMs) {
+    confirmFirmwareHealthy();
+  }
+#endif
   gpio.update();
   static unsigned long lastActivityTime = millis();
 
