@@ -29,12 +29,19 @@ bool BookProgress::load(Data& data) const {
 }
 
 bool BookProgress::save(const Data& data) const {
-  std::string dirPath = filePath.substr(0, filePath.find_last_of('/'));
-  SdMan.mkdir(dirPath.c_str());
-
-  FsFile f;
-  if (!SdMan.openFileForWrite("BPR", filePath.c_str(), f)) {
-    return false;
+  // The record is fixed-size, so overwrite it in place: skipping O_TRUNC avoids freeing and reallocating
+  // the file's cluster (FAT + directory writes) on every save. Only fall back to creating the directory
+  // when the file can't be opened at all.
+  FsFile f = SdMan.open(filePath.c_str(), O_RDWR | O_CREAT);
+  if (f && f.fileSize() > sizeof(Data)) {
+    f.close();  // stale oversized file: rewrite it with truncation below
+  }
+  if (!f) {
+    std::string dirPath = filePath.substr(0, filePath.find_last_of('/'));
+    SdMan.mkdir(dirPath.c_str());
+    if (!SdMan.openFileForWrite("BPR", filePath.c_str(), f)) {
+      return false;
+    }
   }
 
   bool success = (f.write(&data, sizeof(Data)) == sizeof(Data));

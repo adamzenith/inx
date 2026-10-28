@@ -269,7 +269,9 @@ ScreenComponents::LoadingProgressLayout EpubActivity::loadingProgressShow(const 
  * @param skipImages If true, skip processing new images
  * @return true if successful, false otherwise
  */
-bool EpubActivity::buildSection(int spineIndex, const ViewportInfo& info, bool showProgress, bool skipImages) {
+bool EpubActivity::buildSection(int spineIndex, const ViewportInfo& info, bool showProgress, bool skipImages,
+                                const std::function<bool()>& shouldAbort, bool* outAborted) {
+  if (outAborted) *outAborted = false;
   if (!epub) return false;
   const int totalSpines = epub->getSpineItemsCount();
   if (spineIndex < 0 || spineIndex >= totalSpines) {
@@ -290,12 +292,12 @@ bool EpubActivity::buildSection(int spineIndex, const ViewportInfo& info, bool s
   std::shared_ptr<Epub> sharedEpub = std::shared_ptr<Epub>(epub.get(), [](Epub*) {});
   auto tempSection = std::unique_ptr<Section>(new Section(sharedEpub, spineIndex, renderer));
 
-  ScreenComponents::PopupLayout chapterLoadPopup{};
   const bool useChapterLoadBar = showProgress;
   if (useChapterLoadBar) {
     dismissMenuDrawerForBlockingWork(false);
-    chapterLoadPopup = ScreenComponents::drawPopup(renderer, "Loading chapter...");
-    ScreenComponents::fillPopupProgress(renderer, chapterLoadPopup, 12);
+    // One refresh for the popup. Progress-bar steps and a blanking refresh afterwards each cost a full
+    // e-ink update before the chapter's first page can appear, so the page render simply replaces it.
+    ScreenComponents::drawPopup(renderer, "Loading chapter...");
   }
 
   bool success = tempSection->createSectionFile(
@@ -303,7 +305,8 @@ bool EpubActivity::buildSection(int spineIndex, const ViewportInfo& info, bool s
       info.wordSpacing, bookSettings.extraParagraphSpacing, bookSettings.paragraphAlignment, info.width, info.height,
       bookSettings.hyphenationEnabled, bookSettings.paragraphCssIndentEnabled != 0,
       bookSettings.bionicReadingEnabled != 0, nullptr, skipImages, nullptr, false, ImageRenderMode::OneBit, false,
-      info.totalMarginTop);
+      info.totalMarginTop, shouldAbort);
+  if (outAborted) *outAborted = tempSection->wasAborted();
 
   if (success) {
     // This spine's pagination just changed (first build, or a font/size/margin change forced a rebuild) -
@@ -313,12 +316,6 @@ bool EpubActivity::buildSection(int spineIndex, const ViewportInfo& info, bool s
     EpubAnnotations::migrateSpineAnnotations(cachePath, spineIndex, tempSection->pageCount, renderer, info.fontId,
                                              FontManager::getNextFont(info.fontId), info.totalMarginLeft,
                                              info.totalMarginTop);
-  }
-
-  if (useChapterLoadBar) {
-    ScreenComponents::fillPopupProgress(renderer, chapterLoadPopup, 100);
-    renderer.clearScreen();
-    renderer.displayBuffer();
   }
 
   return success;
@@ -392,35 +389,65 @@ void EpubActivity::preloadSection(int spineIndex) {
 
   ViewportInfo info = calculateViewport();
   if (isSectionCached(spineIndex, info)) {
-    lastPreloadedSpineIndex = spineIndex;
+    if (spineIndex < currentSpineIndex) {
+      lastPreloadedPrevSpineIndex_ = spineIndex;
+    } else {
+      lastPreloadedSpineIndex = spineIndex;
+    }
     return;
   }
 
   Serial.printf("[%lu] [EPA] preloadSection: building spine=%d in background\n", millis(), spineIndex);
+  // A button press abandons the build so the reader responds at once; it is queued again once idle.
+  auto abortOnInput = []() {
+#ifdef SIMULATOR
+    return false;
+#else
+    gpio.pollInput();
+    return gpio.hasPendingInput();
+#endif
+  };
+  bool aborted = false;
   // showProgress=false: nothing is drawn, so the page the reader is looking at stays untouched.
-  const bool ok = buildSection(spineIndex, info, false, false);
+  const bool ok = buildSection(spineIndex, info, false, false, abortOnInput, &aborted);
+  if (aborted) {
+    Serial.printf("[%lu] [EPA] preloadSection: interrupted by input spine=%d\n", millis(), spineIndex);
+    pendingPreloadSpine_ = spineIndex;
+    preloadDueAt_ = millis() + kPreloadIdleDelayMs;
+    return;
+  }
   // Mark it either way - a spine that fails to build would fail on every retry too, and re-trying it on
-  // every idle frame would make the last page of the chapter permanently unresponsive.
-  lastPreloadedSpineIndex = spineIndex;
+  // every idle frame would make the chapter permanently unresponsive.
+  if (spineIndex < currentSpineIndex) {
+    lastPreloadedPrevSpineIndex_ = spineIndex;
+  } else {
+    lastPreloadedSpineIndex = spineIndex;
+  }
   if (!ok) {
     Serial.printf("[%lu] [EPA] preloadSection: build failed spine=%d\n", millis(), spineIndex);
   }
 }
 
 /**
- * @brief Queues the next chapter for preloading when the reader lands on the last page of this one
+ * @brief Queues a neighbouring chapter for preloading once the reader is idle
+ *
+ * The next chapter is queued from any page (the build is abandoned on a button press, so it can't make the
+ * reader feel stuck); on a chapter's first page the previous one is queued too, for paging backwards.
  */
-void EpubActivity::schedulePreloadIfOnLastPage() {
+void EpubActivity::schedulePreload() {
   pendingPreloadSpine_ = -1;
   if (!epub || !section || section->pageCount <= 0) return;
   if (menuDrawerVisible || settingsDrawerVisible || annUi_.isActive() || dictUi_.isActive()) return;
-  if (section->currentPage != section->pageCount - 1) return;
 
   const int nextSpine = currentSpineIndex + 1;
-  if (nextSpine >= epub->getSpineItemsCount()) return;
-  if (nextSpine == lastPreloadedSpineIndex) return;
-
-  pendingPreloadSpine_ = nextSpine;
+  if (nextSpine < epub->getSpineItemsCount() && nextSpine != lastPreloadedSpineIndex) {
+    pendingPreloadSpine_ = nextSpine;
+  } else if (section->currentPage == 0 && currentSpineIndex > 0 &&
+             currentSpineIndex - 1 != lastPreloadedPrevSpineIndex_) {
+    pendingPreloadSpine_ = currentSpineIndex - 1;
+  } else {
+    return;
+  }
   preloadDueAt_ = millis() + kPreloadIdleDelayMs;
 }
 
@@ -436,7 +463,11 @@ void EpubActivity::maybeRunPendingPreload() {
     return;
   }
 
-  if (mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased()) {
+  bool inputActive = mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased();
+#ifndef SIMULATOR
+  inputActive = inputActive || gpio.hasPendingInput();  // a held button would abort the build straight away
+#endif
+  if (inputActive) {
     preloadDueAt_ = millis() + kPreloadIdleDelayMs;
     return;
   }
@@ -543,19 +574,75 @@ void EpubActivity::saveProgress(int spineIndex, int currentPage, int pageCount, 
   data.chapterPageCount = pageCount;
   data.lastReadTimestamp = millis();
 
+  progressDirty_ = false;
+
+  float bookProgressValue = 0.0f;
   if (pageCount > 0) {
     float spineProgress = static_cast<float>(currentPage) / static_cast<float>(pageCount);
-    data.progressPercent = epub->calculateProgress(spineIndex, spineProgress) * 100.0f;
+    bookProgressValue = epub->calculateProgress(spineIndex, spineProgress);
+    data.progressPercent = bookProgressValue * 100.0f;
   }
 
   bookProgress->save(data);
 
   if (pageCount > 0) {
-    float spineProgress = static_cast<float>(currentPage) / static_cast<float>(pageCount);
-    float bookProgressValue = epub->calculateProgress(spineIndex, spineProgress);
     RECENT_BOOKS.addBook(epub->getPath(), epub->getCachePath(), epub->getTitle(), epub->getAuthor(), bookProgressValue,
                          saveRecentNow);
   }
+}
+
+/**
+ * @brief Deserializes a page of the current section into prefetchedPage_, without drawing anything
+ */
+void EpubActivity::prefetchPage(const int pageNumber) {
+  if (!section || pageNumber < 0 || pageNumber >= section->pageCount) return;
+  if (prefetchedPage_ && prefetchedSectionGen_ == sectionGeneration_ && prefetchedPageNumber_ == pageNumber) return;
+  // A Page is a few KB; skip rather than squeeze the heap while grayscale passes hold the 48KB BW snapshot.
+  if (ESP.getFreeHeap() < kPrefetchMinFreeHeap) return;
+
+  const int savedPage = section->currentPage;
+  section->currentPage = pageNumber;
+  prefetchedPage_ = section->loadPageFromSectionFile();
+  section->currentPage = savedPage;
+  prefetchedSectionGen_ = sectionGeneration_;
+  prefetchedPageNumber_ = prefetchedPage_ ? pageNumber : -1;
+}
+
+/**
+ * @brief Called when a page button goes down: prefetches the page its short press (fired on release) will show
+ */
+void EpubActivity::prepareForButtonAction(const uint8_t action) {
+  if (!section || menuDrawerVisible || settingsDrawerVisible) return;
+  if (action == SystemSetting::BTN_ACTION_PAGE_NEXT) {
+    prefetchPage(section->currentPage + 1);
+  } else if (action == SystemSetting::BTN_ACTION_PAGE_PREVIOUS) {
+    prefetchPage(section->currentPage - 1);
+  }
+}
+
+/**
+ * @brief Hands over the prefetched page if it is the requested page of the current section
+ */
+std::unique_ptr<Page> EpubActivity::takePrefetchedPage(const int pageNumber) {
+  if (!prefetchedPage_ || prefetchedSectionGen_ != sectionGeneration_ || prefetchedPageNumber_ != pageNumber) {
+    prefetchedPage_.reset();
+    return nullptr;
+  }
+  prefetchedPageNumber_ = -1;
+  return std::move(prefetchedPage_);
+}
+
+/**
+ * @brief Writes the progress deferred by a page turn once the reader has been idle for a moment
+ */
+void EpubActivity::maybeFlushProgress() {
+  if (!progressDirty_ || !section) return;
+  if (mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased()) {
+    progressDirtyAt_ = millis();
+    return;
+  }
+  if (millis() - progressDirtyAt_ < kProgressSaveIdleMs) return;
+  saveProgress(currentSpineIndex, section->currentPage, section->pageCount, false);
 }
 
 /**
@@ -637,6 +724,8 @@ void EpubActivity::loadCurrentSection(const bool showProgress) {
       pendingPercentJump = false;
     }
     section = std::move(newSection);
+    sectionGeneration_++;
+    prefetchedPage_.reset();
     if (nextPageNumber == static_cast<int>(UINT16_MAX)) {
       section->currentPage = (section->pageCount > 0) ? (section->pageCount - 1) : 0;
     } else {
@@ -702,7 +791,6 @@ bool EpubActivity::slowPath() {
   const bool coverAvailable = displayCoverOrTitle();
   loadingProgress = 30;
   drawLoadingScreen();
-  vTaskDelay(pdMS_TO_TICKS(50));
 
   ensureThumbnailExists(coverAvailable);
   const int initialSpine = epub->getSpineIndexForInitialOpen();
@@ -771,6 +859,7 @@ void EpubActivity::onEnter() {
   lastGoodPageNumber_ = nextPageNumber;
   chapterRecoveryAttempted_ = false;
   lastPreloadedSpineIndex = -1;
+  lastPreloadedPrevSpineIndex_ = -1;
   pendingPreloadSpine_ = -1;
 
   annUi_.clearSessionAndCapture();
@@ -782,6 +871,9 @@ bool EpubActivity::preventAutoSleep() { return gpio.deviceIsX3() && SETTINGS.sha
  * @brief Called when exiting the activity
  */
 void EpubActivity::onExit() {
+  renderer.clearRefreshJob();
+  prefetchedPage_.reset();
+
   if (menuDrawer) {
     menuDrawer->hide();
     delete menuDrawer;
@@ -892,7 +984,6 @@ void EpubActivity::loop() {
     if (settingsDrawer->isDismissed()) {
       saveBookSettings();
       settingsDrawerVisible = false;
-      vTaskDelay(pdMS_TO_TICKS(100));
       isToggleClosed = true;
       suppressBackUntilReleased_ = true;
       updateRequired = true;
@@ -996,7 +1087,6 @@ void EpubActivity::loop() {
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     pauseReadingStats();
-    vTaskDelay(pdMS_TO_TICKS(100));
     onGoBack();
     return;
   }
@@ -1004,11 +1094,12 @@ void EpubActivity::loop() {
   if (updateRequired) {
     updateRequired = false;
     renderScreen();
-    schedulePreloadIfOnLastPage();
+    schedulePreload();
     return;
   }
 
   // Nothing to handle this frame: a good moment to paginate the next chapter, if one is queued.
+  maybeFlushProgress();
   maybeRunPendingPreload();
 }
 
@@ -1271,7 +1362,6 @@ void EpubActivity::toggleSettingsDrawer() {
  */
 void EpubActivity::goHome() {
   readerPopup("Closing book");
-  vTaskDelay(pdMS_TO_TICKS(100));
   onGoBack();
 }
 
@@ -1758,7 +1848,10 @@ void EpubActivity::renderScreen(const bool clearFramebuffer) {
     section->currentPage = 0;
   }
 
-  auto page = section->loadPageFromSectionFile();
+  auto page = takePrefetchedPage(section->currentPage);
+  if (!page) {
+    page = section->loadPageFromSectionFile();
+  }
   if (!page) {
     Serial.printf("[%lu] [EPA] renderScreen: page deserialize failed spine=%d page=%d count=%u\n", millis(),
                   currentSpineIndex, section->currentPage, static_cast<unsigned>(section->pageCount));
@@ -1768,13 +1861,19 @@ void EpubActivity::renderScreen(const bool clearFramebuffer) {
     return;
   }
 
+  // Read the following page from SD while the panel is busy showing this one.
+  const int pageToPrefetch = section->currentPage + 1;
+  renderer.setRefreshJob([this, pageToPrefetch]() { prefetchPage(pageToPrefetch); });
+
   renderContents(std::move(page), info.totalMarginTop, info.totalMarginRight, info.totalMarginBottom,
                  info.totalMarginLeft);
+  renderer.runRefreshJob();  // no-op if it already ran during the refresh
 
   if (settingsDrawerVisible && settingsDrawer) settingsDrawer->render();
   if (menuDrawerVisible && menuDrawer) menuDrawer->render();
 
-  saveProgress(currentSpineIndex, section->currentPage, section->pageCount, false);
+  progressDirty_ = true;
+  progressDirtyAt_ = millis();
   lastGoodSpineIndex_ = currentSpineIndex;
   lastGoodPageNumber_ = section->currentPage;
   chapterRecoveryAttempted_ = false;
@@ -2305,6 +2404,7 @@ void EpubActivity::applyBookSettings() {
   dismissMenuDrawerForBlockingWork();
   // Every cached section is about to be stale for the new layout; forget what was preloaded for the old one.
   lastPreloadedSpineIndex = -1;
+  lastPreloadedPrevSpineIndex_ = -1;
   pendingPreloadSpine_ = -1;
 
   int currentPage = 0;

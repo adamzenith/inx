@@ -127,11 +127,25 @@ class EpubActivity final : public ActivityWithSubactivity {
   std::vector<Bookmark> bookmarks;
   bool showBookmarkIndicator = false;
   int lastPreloadedSpineIndex = -1;
+  /** Previous chapter already preloaded while sitting on a chapter's first page; -1 when none. */
+  int lastPreloadedPrevSpineIndex_ = -1;
   /** Spine queued for background pagination (next chapter, while sitting on the last page); -1 when idle. */
   int pendingPreloadSpine_ = -1;
   /** Earliest millis() at which the queued preload may run - keeps input snappy right after the page turn. */
   unsigned long preloadDueAt_ = 0;
   static constexpr unsigned long kPreloadIdleDelayMs = 400;
+  /** A page turn's progress save is deferred until the reader has been idle this long, keeping the SD write
+   *  (and the book.bin reads behind calculateProgress) off the page-turn path. onExit() always flushes. */
+  bool progressDirty_ = false;
+  unsigned long progressDirtyAt_ = 0;
+  static constexpr unsigned long kProgressSaveIdleMs = 1500;
+  /** The page after the one on screen, deserialized while the panel refreshes (or when a page button goes down)
+   *  so the next turn can skip reading it from SD. Keyed by section generation + page number. */
+  std::unique_ptr<Page> prefetchedPage_;
+  uint32_t prefetchedSectionGen_ = 0;
+  int prefetchedPageNumber_ = -1;
+  uint32_t sectionGeneration_ = 0;
+  static constexpr uint32_t kPrefetchMinFreeHeap = 32 * 1024;
   bool lastPageHadImages = false;
   /** Previous page: image union bbox at least half screen in both dimensions (for smart HALF refresh). */
   bool lastPageHadLargeImage = false;
@@ -287,10 +301,14 @@ class EpubActivity final : public ActivityWithSubactivity {
    * Queues the next chapter for background pagination once the reader settles on the last page of the
    * current one, so the "Loading chapter..." wait is already paid by the time they turn the page.
    */
-  void schedulePreloadIfOnLastPage();
+  void schedulePreload();
 
   /** Runs a queued preload when the reader has been idle long enough; no-op otherwise. */
   void maybeRunPendingPreload();
+  void maybeFlushProgress();
+  void prefetchPage(int pageNumber);
+  std::unique_ptr<Page> takePrefetchedPage(int pageNumber);
+  void prepareForButtonAction(uint8_t action);
 
   /** Paginates spineIndex into its cache file if it isn't already cached for the current layout. */
   void preloadSection(int spineIndex);
@@ -358,7 +376,8 @@ class EpubActivity final : public ActivityWithSubactivity {
    * @param skipImages If true, skip processing new images and only use existing cached images
    * @return true if successful, false otherwise
    */
-  bool buildSection(int spineIndex, const ViewportInfo& info, bool showProgress = false, bool skipImages = false);
+  bool buildSection(int spineIndex, const ViewportInfo& info, bool showProgress = false, bool skipImages = false,
+                    const std::function<bool()>& shouldAbort = nullptr, bool* outAborted = nullptr);
 
   /**
    * Loads a section for a given spine index.

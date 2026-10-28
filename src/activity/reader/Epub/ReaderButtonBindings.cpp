@@ -41,10 +41,25 @@ bool ReaderButtonBindings::handleButton(EpubActivity& act, const MappedInputMana
   const bool isPressed = act.mappedInput.isPressed(button);
   const unsigned long now = millis();
 
+  // A tap that started and ended while the loop was blocked (typically during an e-ink refresh, when the
+  // buttons are still sampled) shows up as a press and a release in the same frame, never as a held button.
+  if (!isPressed && !state.active && act.mappedInput.wasPressed(button) && act.mappedInput.wasReleased(button)) {
+    dispatch(act, shortAction);
+    return true;
+  }
+
   if (isPressed && !state.active) {
     state.active = true;
     state.pressStartMs = now;
     state.longFired = false;
+    if (longAction == SystemSetting::BTN_ACTION_NONE) {
+      // Nothing to wait for: act on the press instead of the release. longFired stops the release re-firing it.
+      state.longFired = true;
+      dispatch(act, shortAction);
+      return true;
+    }
+    // The short action only fires on release; use the time the button is held to read its page from SD.
+    act.prepareForButtonAction(shortAction);
     return false;
   }
 
