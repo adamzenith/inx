@@ -37,6 +37,10 @@ bool formatMenuClock(char* out, const size_t outSize) {
     return false;
   }
 
+#ifdef SIMULATOR
+  // The simulator's HalGPIO has no RTC API.
+  return false;
+#else
   HalGPIO::DateTime dt;
   if (!gpio.readDateTime(dt)) {
     return false;
@@ -55,6 +59,7 @@ bool formatMenuClock(char* out, const size_t outSize) {
 
   std::snprintf(out, outSize, "%02u:%02u", hour, dt.minute);
   return true;
+#endif
 }
 
 }  // namespace
