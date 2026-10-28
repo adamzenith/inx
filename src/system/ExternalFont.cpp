@@ -14,29 +14,32 @@ ExternalFont::ExternalFont() : m_fontData(nullptr) {}
 /** Unload the font and release its resources. */
 ExternalFont::~ExternalFont() { unload(); }
 
-ExternalFont::GlyphBitmapCacheSlot* ExternalFont::s_bitmapCache = nullptr;
-uint32_t ExternalFont::s_bitmapCacheGen = 0;
+ExternalFont::GlyphBitmapCacheStorage* ExternalFont::s_bitmapCache = nullptr;
+uint32_t ExternalFont::s_bitmapWriteHead = 0;
 uint8_t ExternalFont::s_bitmapCacheUsers = 0;
+uint8_t ExternalFont::s_nextBitmapCacheTag = 0;
+
+namespace {
+inline size_t metaSlotFor(const uint32_t cp, const size_t slots) { return (cp ^ (cp >> 7) ^ (cp >> 14)) & (slots - 1); }
+inline size_t bitmapSetFor(const uint32_t offset, const uint8_t tag) {
+  return ((offset ^ (static_cast<uint32_t>(tag) << 24)) * 2654435761u) >> 25;  // top 7 bits -> 128 sets
+}
+}  // namespace
 
 /** Clear the per-instance glyph metadata cache. */
 void ExternalFont::metaCacheClear() {
   for (size_t i = 0; i < kGlyphMetaCacheSlots; ++i) {
     m_metaCache[i].cp = 0xFFFFFFFFu;
-    m_metaCache[i].stamp = 0;
     m_metaCache[i].glyph = EpdGlyph{};
   }
-  m_metaCacheGen = 0;
 }
 
 /** Clear this font's entries from the shared bitmap cache. */
 void ExternalFont::bitmapCacheClear() {
-  if (s_bitmapCache) {
-    for (size_t i = 0; i < kGlyphBitmapCacheSlots; ++i) {
-      if (s_bitmapCache[i].owner == this) {
-        s_bitmapCache[i].owner = nullptr;
-        s_bitmapCache[i].offset = 0;
-        s_bitmapCache[i].length = 0;
-        s_bitmapCache[i].stamp = 0;
+  if (s_bitmapCache && m_bitmapCacheTag != 0) {
+    for (auto& e : s_bitmapCache->index) {
+      if (e.tag == m_bitmapCacheTag) {
+        e.tag = 0;
       }
     }
   }
@@ -51,24 +54,34 @@ void ExternalFont::setGlyphBitmapCacheEnabled(const bool enabled) {
   m_bitmapCacheEnabled = enabled;
   if (!enabled) {
     bitmapCacheClear();
+    m_bitmapCacheTag = 0;
     if (s_bitmapCacheUsers > 0) {
       --s_bitmapCacheUsers;
     }
     if (s_bitmapCacheUsers == 0) {
-      delete[] s_bitmapCache;
+      delete s_bitmapCache;
       s_bitmapCache = nullptr;
-      s_bitmapCacheGen = 0;
+      s_bitmapWriteHead = 0;
     }
     return;
   }
 
   if (!s_bitmapCache) {
-    s_bitmapCache = new (std::nothrow) GlyphBitmapCacheSlot[kGlyphBitmapCacheSlots]();
-    s_bitmapCacheGen = 0;
+    s_bitmapCache = new (std::nothrow) GlyphBitmapCacheStorage;
+    if (s_bitmapCache) {
+      for (auto& e : s_bitmapCache->index) {
+        e = GlyphBitmapCacheEntry{0, 0, 0, 0, 0};
+      }
+    }
+    s_bitmapWriteHead = 0;
   }
   if (s_bitmapCache) {
     ++s_bitmapCacheUsers;
-    bitmapCacheClear();
+    if (++s_nextBitmapCacheTag == 0) {
+      s_nextBitmapCacheTag = 1;
+    }
+    m_bitmapCacheTag = s_nextBitmapCacheTag;
+    bitmapCacheClear();  // drop stale entries left by a previous owner of this tag
   } else {
     m_bitmapCacheEnabled = false;
   }
@@ -86,6 +99,7 @@ void ExternalFont::unload() {
   m_glyphCount = 0;
   m_bitmapDataStart = 0;
   m_hasAntiAliasData = false;
+  freeGlyphRuns();
   metaCacheClear();
 }
 
@@ -137,6 +151,7 @@ bool ExternalFont::load(const char* path, const bool enableGlyphBitmapCache) {
     return false;
   }
   m_bitmapDataStart = m_file.position();
+  buildGlyphRuns();
   setGlyphBitmapCacheEnabled(enableGlyphBitmapCache);
   m_hasAntiAliasData = enableGlyphBitmapCache && m_fontData->is2Bit && detectAntiAliasData();
 
@@ -144,16 +159,20 @@ bool ExternalFont::load(const char* path, const bool enableGlyphBitmapCache) {
   bitmapCacheClear();
   if (m_bitmapCacheEnabled) {
     Serial.printf(
-        "[ExternalFont] On-demand glyph table: %u glyphs, mode=%s, aa=%d, meta %u-slot (~%u B), bitmap %u-slot x %u B "
-        "(~%u B)\n",
+        "[ExternalFont] On-demand glyph table: %u glyphs, mode=%s, aa=%d, runs %u (~%u B), meta %u-slot (~%u B), "
+        "shared bitmap arena %u B + %u-entry index (~%u B)\n",
         m_glyphCount, m_fontData->is2Bit ? "2bit" : "1bit", m_hasAntiAliasData ? 1 : 0,
+        static_cast<unsigned>(m_runCount), static_cast<unsigned>(m_runCount * sizeof(GlyphRun)),
         static_cast<unsigned>(kGlyphMetaCacheSlots), static_cast<unsigned>(sizeof(m_metaCache)),
-        static_cast<unsigned>(kGlyphBitmapCacheSlots), static_cast<unsigned>(kGlyphBitmapCacheMaxBytes),
-        static_cast<unsigned>(kGlyphBitmapCacheSlots * sizeof(GlyphBitmapCacheSlot)));
+        static_cast<unsigned>(kGlyphBitmapArenaBytes),
+        static_cast<unsigned>(kGlyphBitmapCacheSets * kGlyphBitmapCacheWays),
+        static_cast<unsigned>(sizeof(GlyphBitmapCacheStorage)));
   } else {
-    Serial.printf("[ExternalFont] On-demand glyph table: %u glyphs, mode=%s, aa=0, meta %u-slot (~%u B), bitmap cache off\n",
-                  m_glyphCount, m_fontData->is2Bit ? "2bit" : "1bit",
-                  static_cast<unsigned>(kGlyphMetaCacheSlots), static_cast<unsigned>(sizeof(m_metaCache)));
+    Serial.printf(
+        "[ExternalFont] On-demand glyph table: %u glyphs, mode=%s, aa=0, runs %u, meta %u-slot (~%u B), "
+        "bitmap cache off\n",
+        m_glyphCount, m_fontData->is2Bit ? "2bit" : "1bit", static_cast<unsigned>(m_runCount),
+        static_cast<unsigned>(kGlyphMetaCacheSlots), static_cast<unsigned>(sizeof(m_metaCache)));
   }
   return true;
 }
@@ -282,44 +301,152 @@ void ExternalFont::decodeGlyphRow(const uint8_t entry[24], EpdGlyph& out) const 
   out.dataOffset = m_bitmapDataStart + rel;
 }
 
-/** Look up a glyph's metadata in the per-instance metadata cache. */
-bool ExternalFont::metaCacheLookup(uint32_t cp, EpdGlyph& out) {
-  for (size_t i = 0; i < kGlyphMetaCacheSlots; ++i) {
-    if (m_metaCache[i].cp == cp) {
-      out = m_metaCache[i].glyph;
-      m_metaCache[i].stamp = ++m_metaCacheGen;
+/** Scan the on-SD glyph table once and build the in-RAM table of consecutive-code-point runs. */
+void ExternalFont::buildGlyphRuns() {
+  freeGlyphRuns();
+  if (m_glyphCount == 0 || m_glyphCount > kMaxGlyphsToScanForRuns) {
+    return;
+  }
+  if (!m_file.seek(m_glyphTableStart)) {
+    return;
+  }
+
+  // Worst case is kMaxGlyphRuns entries; collect into a temporary buffer, then keep an exact-size copy.
+  GlyphRun* tmp = new (std::nothrow) GlyphRun[kMaxGlyphRuns];
+  if (!tmp) {
+    return;
+  }
+
+  static constexpr uint32_t kRowsPerChunk = 16;
+  uint8_t chunk[kRowsPerChunk * 24];
+  uint32_t runCount = 0;
+  uint32_t prevCp = 0;
+  bool ok = true;
+  for (uint32_t index = 0; ok && index < m_glyphCount;) {
+    const uint32_t rows = std::min(kRowsPerChunk, m_glyphCount - index);
+    if (static_cast<size_t>(m_file.read(chunk, rows * 24u)) != rows * 24u) {
+      ok = false;
+      break;
+    }
+    for (uint32_t r = 0; r < rows; ++r, ++index) {
+      uint32_t cp = 0;
+      memcpy(&cp, chunk + r * 24u + 18u, 4);
+      if (index > 0 && cp <= prevCp) {
+        ok = false;  // not strictly ascending: keep the original on-disk search semantics
+        break;
+      }
+      if (index == 0 || cp != prevCp + 1) {
+        if (runCount == kMaxGlyphRuns) {
+          ok = false;  // too fragmented to index cheaply; fall back to the on-disk search
+          break;
+        }
+        tmp[runCount++] = GlyphRun{cp, index};
+      }
+      prevCp = cp;
+    }
+  }
+
+  if (ok && runCount > 0) {
+    m_runs = new (std::nothrow) GlyphRun[runCount];
+    if (m_runs) {
+      memcpy(m_runs, tmp, runCount * sizeof(GlyphRun));
+      m_runCount = runCount;
+    }
+  }
+  delete[] tmp;
+}
+
+/** Release the in-RAM run table. */
+void ExternalFont::freeGlyphRuns() {
+  delete[] m_runs;
+  m_runs = nullptr;
+  m_runCount = 0;
+}
+
+/** Find the glyph table index of cp using the in-RAM run table. Returns false if cp is not in the font. */
+bool ExternalFont::findIndexInRuns(const uint32_t cp, uint32_t& outIndex) const {
+  // Find the last run whose firstCp <= cp.
+  uint32_t lo = 0;
+  uint32_t hi = m_runCount;
+  while (lo < hi) {
+    const uint32_t mid = lo + (hi - lo) / 2;
+    if (m_runs[mid].firstCp <= cp) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo == 0) {
+    return false;
+  }
+  const GlyphRun& run = m_runs[lo - 1];
+  const uint32_t runEnd = (lo < m_runCount) ? m_runs[lo].firstIndex : m_glyphCount;
+  const uint32_t delta = cp - run.firstCp;
+  if (delta >= runEnd - run.firstIndex) {
+    return false;
+  }
+  outIndex = run.firstIndex + delta;
+  return true;
+}
+
+/** Find the glyph table index of cp by binary-searching the glyph table on the SD card. */
+bool ExternalFont::findIndexOnDisk(const uint32_t cp, uint32_t& outIndex, bool& ioError) const {
+  ioError = false;
+  int32_t low = 0;
+  int32_t high = static_cast<int32_t>(m_glyphCount) - 1;
+
+  while (low <= high) {
+    const int32_t mid = low + (high - low) / 2;
+    uint32_t midCp = 0;
+    if (!readCodepointAtIndex(static_cast<uint32_t>(mid), midCp)) {
+      ioError = true;
+      return false;
+    }
+
+    if (midCp == cp) {
+      outIndex = static_cast<uint32_t>(mid);
       return true;
+    }
+
+    if (midCp < cp) {
+      low = mid + 1;
+    } else {
+      high = mid - 1;
     }
   }
   return false;
 }
 
-void ExternalFont::metaCacheStore(uint32_t cp, const EpdGlyph& g) {
-  size_t slot = 0;
-  uint32_t bestStamp = 0xFFFFFFFFu;
-  for (size_t i = 0; i < kGlyphMetaCacheSlots; ++i) {
-    if (m_metaCache[i].cp == 0xFFFFFFFFu) {
-      slot = i;
-      break;
-    }
-    if (m_metaCache[i].stamp < bestStamp) {
-      bestStamp = m_metaCache[i].stamp;
-      slot = i;
-    }
+/** Look up a glyph's metadata in the per-instance metadata cache. Sets found=false for a cached miss. */
+bool ExternalFont::metaCacheLookup(const uint32_t cp, EpdGlyph& out, bool& found) const {
+  const GlyphMetaCacheSlot& slot = m_metaCache[metaSlotFor(cp, kGlyphMetaCacheSlots)];
+  if (slot.cp != cp) {
+    return false;
   }
-  m_metaCache[slot].cp = cp;
-  m_metaCache[slot].glyph = g;
-  m_metaCache[slot].stamp = ++m_metaCacheGen;
+  found = slot.glyph.dataOffset != 0;
+  if (found) {
+    out = slot.glyph;
+  }
+  return true;
+}
+
+void ExternalFont::metaCacheStore(const uint32_t cp, const EpdGlyph* g) {
+  GlyphMetaCacheSlot& slot = m_metaCache[metaSlotFor(cp, kGlyphMetaCacheSlots)];
+  slot.cp = cp;
+  slot.glyph = g ? *g : EpdGlyph{};
 }
 
 bool ExternalFont::bitmapCacheLookup(uint32_t offset, uint32_t length, uint8_t* outputBuffer) {
-  if (!s_bitmapCache || !outputBuffer || !bitmapCacheCanStore(offset, length)) {
+  if (!outputBuffer || !bitmapCacheCanStore(offset, length)) {
     return false;
   }
-  for (size_t i = 0; i < kGlyphBitmapCacheSlots; ++i) {
-    if (s_bitmapCache[i].owner == this && s_bitmapCache[i].length == length && s_bitmapCache[i].offset == offset) {
-      memcpy(outputBuffer, s_bitmapCache[i].data, length);
-      s_bitmapCache[i].stamp = ++s_bitmapCacheGen;
+  const GlyphBitmapCacheEntry* set =
+      &s_bitmapCache->index[bitmapSetFor(offset, m_bitmapCacheTag) * kGlyphBitmapCacheWays];
+  for (size_t w = 0; w < kGlyphBitmapCacheWays; ++w) {
+    const GlyphBitmapCacheEntry& e = set[w];
+    if (e.tag == m_bitmapCacheTag && e.offset == offset && e.length == length &&
+        s_bitmapWriteHead - e.absPos <= kGlyphBitmapArenaBytes) {
+      memcpy(outputBuffer, s_bitmapCache->arena + (e.absPos % kGlyphBitmapArenaBytes), length);
       return true;
     }
   }
@@ -327,30 +454,50 @@ bool ExternalFont::bitmapCacheLookup(uint32_t offset, uint32_t length, uint8_t* 
 }
 
 void ExternalFont::bitmapCacheStore(uint32_t offset, uint32_t length, const uint8_t* data) {
-  if (!s_bitmapCache || !data || !bitmapCacheCanStore(offset, length)) {
+  if (!data || !bitmapCacheCanStore(offset, length)) {
     return;
   }
-  size_t slot = 0;
-  uint32_t bestStamp = 0xFFFFFFFFu;
-  for (size_t i = 0; i < kGlyphBitmapCacheSlots; ++i) {
-    if (s_bitmapCache[i].length == 0) {
-      slot = i;
+
+  // Keep the byte counter far from wrap-around (practically unreachable).
+  if (s_bitmapWriteHead > 0xF0000000u) {
+    for (auto& e : s_bitmapCache->index) {
+      e.tag = 0;
+    }
+    s_bitmapWriteHead = 0;
+  }
+
+  // Allocate from the ring; an entry never straddles the wrap point.
+  uint32_t pos = s_bitmapWriteHead % kGlyphBitmapArenaBytes;
+  if (pos + length > kGlyphBitmapArenaBytes) {
+    s_bitmapWriteHead += kGlyphBitmapArenaBytes - pos;
+    pos = 0;
+  }
+  const uint32_t absPos = s_bitmapWriteHead;
+  s_bitmapWriteHead += length;
+  memcpy(s_bitmapCache->arena + pos, data, length);
+
+  // Pick a way: an empty or overwritten one if available, otherwise the older entry.
+  GlyphBitmapCacheEntry* set = &s_bitmapCache->index[bitmapSetFor(offset, m_bitmapCacheTag) * kGlyphBitmapCacheWays];
+  GlyphBitmapCacheEntry* victim = &set[0];
+  for (size_t w = 0; w < kGlyphBitmapCacheWays; ++w) {
+    GlyphBitmapCacheEntry& e = set[w];
+    if (e.tag == 0 || s_bitmapWriteHead - e.absPos > kGlyphBitmapArenaBytes) {
+      victim = &e;
       break;
     }
-    if (s_bitmapCache[i].stamp < bestStamp) {
-      bestStamp = s_bitmapCache[i].stamp;
-      slot = i;
+    if (e.absPos < victim->absPos) {
+      victim = &e;
     }
   }
-  s_bitmapCache[slot].owner = this;
-  s_bitmapCache[slot].offset = offset;
-  s_bitmapCache[slot].length = static_cast<uint16_t>(length);
-  memcpy(s_bitmapCache[slot].data, data, length);
-  s_bitmapCache[slot].stamp = ++s_bitmapCacheGen;
+  victim->offset = offset;
+  victim->absPos = absPos;
+  victim->length = static_cast<uint16_t>(length);
+  victim->tag = m_bitmapCacheTag;
 }
 
 bool ExternalFont::bitmapCacheCanStore(const uint32_t offset, const uint32_t length) const {
-  if (!m_bitmapCacheEnabled || !s_bitmapCache || offset == 0 || length == 0 || length > kGlyphBitmapCacheMaxBytes) {
+  if (!m_bitmapCacheEnabled || !s_bitmapCache || m_bitmapCacheTag == 0 || offset == 0 || length == 0 ||
+      length > kGlyphBitmapCacheMaxBytes) {
     return false;
   }
   return true;
@@ -361,43 +508,39 @@ bool ExternalFont::getGlyphMetadata(uint32_t cp, EpdGlyph& out) {
     return false;
   }
 
-  if (metaCacheLookup(cp, out)) {
-    return true;
+  bool cachedFound = false;
+  if (metaCacheLookup(cp, out, cachedFound)) {
+    return cachedFound;
   }
 
-  int32_t low = 0;
-  int32_t high = static_cast<int32_t>(m_glyphCount) - 1;
-  int32_t found = -1;
-
-  while (low <= high) {
-    const int32_t mid = low + (high - low) / 2;
-    uint32_t midCp = 0;
-    if (!readCodepointAtIndex(static_cast<uint32_t>(mid), midCp)) {
-      return false;
-    }
-
-    if (midCp == cp) {
-      found = mid;
-      break;
-    }
-
-    if (midCp < cp) {
-      low = mid + 1;
-    } else {
-      high = mid - 1;
+  uint32_t index = 0;
+  bool found = false;
+  if (m_runs) {
+    found = findIndexInRuns(cp, index);
+  } else {
+    bool ioError = false;
+    found = findIndexOnDisk(cp, index, ioError);
+    if (ioError) {
+      return false;  // don't cache transient SD errors
     }
   }
 
-  if (found < 0) {
+  if (!found) {
+    metaCacheStore(cp, nullptr);  // negative entry: cp is not in this font
     return false;
   }
 
   uint8_t entry[24];
-  if (!readGlyphEntryAtIndex(static_cast<uint32_t>(found), entry)) {
+  if (!readGlyphEntryAtIndex(index, entry)) {
     return false;
   }
+  uint32_t rowCp = 0;
+  memcpy(&rowCp, entry + 18, 4);
+  if (rowCp != cp) {
+    return false;  // index inconsistent with the file; don't cache
+  }
   decodeGlyphRow(entry, out);
-  metaCacheStore(cp, out);
+  metaCacheStore(cp, &out);
   return true;
 }
 
