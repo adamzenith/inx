@@ -162,7 +162,8 @@ void WifiSelectionActivity::processWifiScanResults() {
   std::sort(networks.begin(), networks.end(),
             [](const WifiNetworkInfo& a, const WifiNetworkInfo& b) { return a.rssi > b.rssi; });
 
-  std::sort(networks.begin(), networks.end(), [](const WifiNetworkInfo& a, const WifiNetworkInfo& b) {
+  // Stable so saved networks stay ordered by signal strength
+  std::stable_sort(networks.begin(), networks.end(), [](const WifiNetworkInfo& a, const WifiNetworkInfo& b) {
     return a.hasSavedPassword && !b.hasSavedPassword;
   });
 
@@ -170,6 +171,11 @@ void WifiSelectionActivity::processWifiScanResults() {
   state = WifiSelectionState::NETWORK_LIST;
   selectedNetworkIndex = 0;
   updateRequired = true;
+
+  // Skip the list and connect to the strongest saved network; on failure the user lands back on the list
+  if (!networks.empty() && networks[0].hasSavedPassword) {
+    selectNetwork(0);
+  }
 }
 
 /**
