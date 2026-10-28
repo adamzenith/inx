@@ -7,6 +7,7 @@
 
 #include <ESPmDNS.h>
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
 #include <WiFi.h>
 #include <esp_task_wdt.h>
 
@@ -87,6 +88,12 @@ void LocalNetworkActivity::onExit() {
   stopWebServer();
   MDNS.end();
 
+  // WifiSelectionActivity leaves the station connected for its parent; without this the radio stays
+  // associated while reading until the next deep sleep.
+  WiFi.disconnect(false);
+  delay(30);
+  WiFi.mode(WIFI_OFF);
+
   if (renderingMutex) {
     xSemaphoreTake(renderingMutex, portMAX_DELAY);
     if (displayTaskHandle) {
@@ -134,6 +141,21 @@ void LocalNetworkActivity::startWebServer() {
   Serial.printf("[%lu] [LOCALNET] Starting web server...\n", millis());
 
   webServer.reset(new LocalServer());
+  leaveRequested = false;
+  // An upload holds loop() inside handleClient(), so Back is sampled on each received chunk instead. A
+  // button found down gets a second sample past the input debounce.
+  webServer->setUploadCancelCheck([this] {
+    gpio.update();
+#ifndef SIMULATOR
+    if (gpio.hasPendingInput()) {
+      delay(6);
+      gpio.update();
+    }
+#endif
+    leaveRequested = leaveRequested || mappedInput.isPressed(MappedInputManager::Button::Back) ||
+                     mappedInput.wasPressed(MappedInputManager::Button::Back);
+    return leaveRequested;
+  });
   webServer->begin();
 
   if (webServer->isRunning()) {
@@ -187,6 +209,11 @@ void LocalNetworkActivity::loop() {
     constexpr int MAX_ITERATIONS = 500;
     for (int i = 0; i < MAX_ITERATIONS && webServer->isRunning(); i++) {
       webServer->handleClient();
+      if (leaveRequested) {
+        Serial.printf("[%lu] [LOCALNET] Back pressed during upload\n", millis());
+        if (onGoBack) onGoBack();
+        return;
+      }
       if ((i & 0x1F) == 0x1F) {
         esp_task_wdt_reset();
       }

@@ -9,6 +9,7 @@
 #include <WebSocketsServer.h>
 #include <WiFiUdp.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -48,7 +49,13 @@ class LocalServer {
 
   uint16_t getPort() const { return port; }
 
+  // An HTTP upload holds handleClient() until its body is read, so this is polled on each chunk.
+  // Returning true drops the client: the upload aborts and its partial file is removed.
+  void setUploadCancelCheck(std::function<bool()> check) { uploadCancelCheck = std::move(check); }
+
  private:
+  std::function<bool()> uploadCancelCheck;
+  bool dropUploadIfCancelled() const;
   std::unique_ptr<WebServer> server = nullptr;
   std::unique_ptr<WebSocketsServer> wsServer = nullptr;
   bool running = false;

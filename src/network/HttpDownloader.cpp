@@ -32,10 +32,31 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const 
 #else
 
 #include <esp_http_client.h>
+#include <esp_wifi.h>
 
 extern "C" {
 extern esp_err_t esp_crt_bundle_attach(void* conf);
 }
+
+/** Keeps WiFi modem power-save off for a transfer: with it on, the radio dozes between beacons and
+ * downloads crawl or time out. Restores the previous mode on scope exit. */
+class WifiPowerSaveOff {
+ public:
+  WifiPowerSaveOff() {
+    if (esp_wifi_get_ps(&previous) == ESP_OK) {
+      restore = esp_wifi_set_ps(WIFI_PS_NONE) == ESP_OK;
+    }
+  }
+  ~WifiPowerSaveOff() {
+    if (restore) esp_wifi_set_ps(previous);
+  }
+  WifiPowerSaveOff(const WifiPowerSaveOff&) = delete;
+  WifiPowerSaveOff& operator=(const WifiPowerSaveOff&) = delete;
+
+ private:
+  wifi_ps_type_t previous = WIFI_PS_MIN_MODEM;
+  bool restore = false;
+};
 
 struct FetchCtx {
   Stream* stream;
@@ -88,6 +109,7 @@ static esp_err_t downloadEventHandler(esp_http_client_event_t* event) {
 /** Perform a blocking HTTPS GET of url and stream the response body through fetchCtx, using optional basic auth. */
 static bool doFetch(const std::string& url, FetchCtx* fetchCtx, const std::string& username,
                     const std::string& password) {
+  WifiPowerSaveOff powerSaveOff;
   esp_http_client_config_t cfg = {};
   cfg.url = url.c_str();
   cfg.event_handler = fetchEventHandler;
@@ -199,6 +221,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   return HTTP_ERROR;
 
 #else
+  WifiPowerSaveOff powerSaveOff;
   DownloadCtx dctx = {&file, progress, 0, 0};
   esp_http_client_config_t cfg = {};
   cfg.url = url.c_str();

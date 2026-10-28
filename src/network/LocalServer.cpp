@@ -67,6 +67,76 @@ constexpr const char* DEVICE_IDENTITY_DIR = "/.system/identity";
 constexpr const char* DEVICE_IDENTITY_JSON = "/.system/identity/device.json";
 constexpr const char* DEVICE_IDENTITY_PHOTO = "/.system/identity/device-photo.png";
 constexpr const char* DEVICE_IDENTITY_CARD = "/sleep/device-identity.jpg";
+constexpr const char* DEVICE_IDENTITY_PHOTO_NAME = "device-photo.png";
+constexpr const char* UPLOAD_TEMP_SUFFIX = ".part";
+
+// A generated 8.3 alias opens the long-named entry it belongs to (".system" opens as SYSTEM~1), so it
+// can reach a hidden folder without a leading dot.
+bool isShortAlias(const char* first, const char* last) {
+  const char* tilde = static_cast<const char*>(memchr(first, '~', static_cast<size_t>(last - first)));
+  if (!tilde || tilde + 1 >= last || tilde[1] < '0' || tilde[1] > '9') return false;
+  const char* dot = static_cast<const char*>(memchr(first, '.', static_cast<size_t>(last - first)));
+  const size_t base = static_cast<size_t>((dot ? dot : last) - first);
+  const size_t ext = dot ? static_cast<size_t>(last - dot - 1) : 0;
+  return base <= 8 && ext <= 3;
+}
+
+bool isHiddenComponent(const char* first, const char* last) {
+  // SdFat skips leading spaces and drops trailing dots and spaces when it opens a name, so judge the
+  // name it would actually open (" .system" and ".system." both open ".system").
+  while (first < last && *first == ' ') first++;
+  if (first < last && *first == '.') return true;  // dot files, "." and ".."
+  while (last > first && (last[-1] == '.' || last[-1] == ' ')) last--;
+  if (first == last) return false;
+  if (isShortAlias(first, last)) return true;
+  const size_t len = static_cast<size_t>(last - first);
+  for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
+    if (strlen(HIDDEN_ITEMS[i]) == len && strncasecmp(first, HIDDEN_ITEMS[i], len) == 0) return true;
+  }
+  return false;
+}
+
+// True when any component of the path is hidden, so no request can reach /.system (saved WiFi and OPDS
+// passwords), /.metadata or another hidden entry by naming it further down the path.
+bool isProtectedPath(const String& path) {
+  const char* p = path.c_str();
+  while (*p) {
+    while (*p == '/' || *p == '\\') p++;
+    const char* end = p;
+    while (*end && *end != '/' && *end != '\\') end++;
+    if (end > p && isHiddenComponent(p, end)) return true;
+    p = end;
+  }
+  return false;
+}
+
+// A single file or folder name: no separators, and not hidden.
+bool isSafeName(const String& name) {
+  if (name.isEmpty() || name.indexOf('/') != -1 || name.indexOf('\\') != -1) return false;
+  const char* first = name.c_str();
+  const char* last = first + name.length();
+  if (isHiddenComponent(first, last)) return false;
+  while (last > first && (last[-1] == '.' || last[-1] == ' ')) last--;
+  while (first < last && *first == ' ') first++;
+  return first < last;
+}
+
+// The home page stores the device identity photo under /.system/identity; that one file is the only
+// upload allowed into a hidden folder.
+bool isIdentityPhotoUpload(const String& dirPath, const String& fileName) {
+  return strcasecmp(dirPath.c_str(), DEVICE_IDENTITY_DIR) == 0 && fileName.equals(DEVICE_IDENTITY_PHOTO_NAME);
+}
+
+// Uploads are written to "<name>.part" and only replace the target once complete, so a failed or
+// aborted re-upload leaves the existing file intact.
+bool commitUpload(const String& tempPath, const String& filePath) {
+  if (SdMan.exists(filePath.c_str()) && !SdMan.remove(filePath.c_str())) {
+    SdMan.remove(tempPath.c_str());
+    return false;
+  }
+  // The old file is already gone here, so a failed rename keeps the complete upload as "<name>.part".
+  return SdMan.rename(tempPath.c_str(), filePath.c_str());
+}
 
 LocalServer* wsInstance = nullptr;
 
@@ -78,6 +148,7 @@ char webLibraryIndexPath[128] = "";
 FsFile wsUploadFile;
 String wsUploadFileName;
 String wsUploadPath;
+String wsUploadTempPath;
 size_t wsUploadSize = 0;
 size_t wsUploadReceived = 0;
 unsigned long wsUploadStartTime = 0;
@@ -1040,6 +1111,10 @@ void LocalServer::handleFileListData() const {
       currentPath = currentPath.substring(0, currentPath.length() - 1);
     }
   }
+  if (isProtectedPath(currentPath)) {
+    server->send(403, "text/plain", "Cannot access system files");
+    return;
+  }
 
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
   server->send(200, "application/json", "");
@@ -1278,16 +1353,9 @@ void LocalServer::handleDownload() const {
     itemPath = "/" + itemPath;
   }
 
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (itemName.startsWith(".")) {
+  if (isProtectedPath(itemPath)) {
     server->send(403, "text/plain", "Cannot access system files");
     return;
-  }
-  for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-    if (itemName.equals(HIDDEN_ITEMS[i])) {
-      server->send(403, "text/plain", "Cannot access protected items");
-      return;
-    }
   }
 
   if (!SdMan.exists(itemPath.c_str())) {
@@ -1338,6 +1406,8 @@ void LocalServer::handleDownload() const {
 static FsFile uploadFile;
 static String uploadFileName;
 static String uploadPath = "/";
+static String uploadFilePath;
+static String uploadTempPath;
 static size_t uploadSize = 0;
 static bool uploadSuccess = false;
 static String uploadError = "";
@@ -1374,6 +1444,13 @@ static bool flushUploadBuffer() {
     uploadBufferPos = 0;
     yield();
   }
+  return true;
+}
+
+bool LocalServer::dropUploadIfCancelled() const {
+  if (!uploadCancelCheck || !uploadCancelCheck()) return false;
+  // WebServer's next read of the body then fails and it raises UPLOAD_FILE_ABORTED.
+  server->client().stop();
   return true;
 }
 
@@ -1419,21 +1496,27 @@ void LocalServer::handleUpload() const {
 
     Serial.printf("[%lu] [WEB] [UPLOAD] START: %s to path: %s\n", millis(), uploadFileName.c_str(), uploadPath.c_str());
 
-    String filePath = uploadPath;
-    if (!filePath.endsWith("/")) filePath += "/";
-    filePath += uploadFileName;
+    if (!isSafeName(uploadFileName) ||
+        (isProtectedPath(uploadPath) && !isIdentityPhotoUpload(uploadPath, uploadFileName))) {
+      uploadError = "Invalid upload path";
+      Serial.printf("[%lu] [WEB] [UPLOAD] Rejected: %s/%s\n", millis(), uploadPath.c_str(), uploadFileName.c_str());
+      return;
+    }
+
+    uploadFilePath = uploadPath;
+    if (!uploadFilePath.endsWith("/")) uploadFilePath += "/";
+    uploadFilePath += uploadFileName;
+    uploadTempPath = uploadFilePath + UPLOAD_TEMP_SUFFIX;
 
     esp_task_wdt_reset();
-    if (SdMan.exists(filePath.c_str())) {
-      Serial.printf("[%lu] [WEB] [UPLOAD] Overwriting existing file: %s\n", millis(), filePath.c_str());
-      esp_task_wdt_reset();
-      SdMan.remove(filePath.c_str());
+    if (SdMan.exists(uploadTempPath.c_str())) {
+      SdMan.remove(uploadTempPath.c_str());
     }
 
     esp_task_wdt_reset();
-    if (!SdMan.openFileForWrite("WEB", filePath, uploadFile)) {
+    if (!SdMan.openFileForWrite("WEB", uploadTempPath, uploadFile)) {
       uploadError = "Failed to create file on SD card";
-      Serial.printf("[%lu] [WEB] [UPLOAD] FAILED to create file: %s\n", millis(), filePath.c_str());
+      Serial.printf("[%lu] [WEB] [UPLOAD] FAILED to create file: %s\n", millis(), uploadTempPath.c_str());
       return;
     }
     esp_task_wdt_reset();
@@ -1442,13 +1525,14 @@ void LocalServer::handleUpload() const {
     if (!uploadBuffer) {
       uploadError = "Failed to allocate upload buffer";
       uploadFile.close();
-      SdMan.remove(filePath.c_str());
+      SdMan.remove(uploadTempPath.c_str());
       Serial.printf("[%lu] [WEB] [UPLOAD] FAILED to allocate %d byte buffer\n", millis(), UPLOAD_BUFFER_SIZE);
       return;
     }
 
-    Serial.printf("[%lu] [WEB] [UPLOAD] File created successfully: %s\n", millis(), filePath.c_str());
+    Serial.printf("[%lu] [WEB] [UPLOAD] File created successfully: %s\n", millis(), uploadTempPath.c_str());
   } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (dropUploadIfCancelled()) return;
     if (uploadFile && uploadError.isEmpty()) {
       const uint8_t* data = upload.buf;
       size_t remaining = upload.currentSize;
@@ -1466,6 +1550,8 @@ void LocalServer::handleUpload() const {
           if (!flushUploadBuffer()) {
             uploadError = "Failed to write to SD card - disk may be full";
             uploadFile.close();
+            freeUploadBuffer();
+            SdMan.remove(uploadTempPath.c_str());
             return;
           }
         }
@@ -1483,11 +1569,19 @@ void LocalServer::handleUpload() const {
     }
   } else if (upload.status == UPLOAD_FILE_END) {
     if (uploadFile) {
-      if (!flushUploadBuffer()) {
+      if (!server->client().connected()) {
+        uploadError = "Upload aborted";
+      } else if (!flushUploadBuffer()) {
         uploadError = "Failed to write final data to SD card";
       }
       uploadFile.close();
       freeUploadBuffer();
+
+      if (uploadError.isEmpty() && !commitUpload(uploadTempPath, uploadFilePath)) {
+        uploadError = "Failed to replace the existing file";
+      } else if (!uploadError.isEmpty()) {
+        SdMan.remove(uploadTempPath.c_str());
+      }
 
       if (uploadError.isEmpty()) {
         uploadSuccess = true;
@@ -1499,21 +1593,14 @@ void LocalServer::handleUpload() const {
         Serial.printf("[%lu] [WEB] [UPLOAD] Diagnostics: %d writes, total write time: %lu ms (%.1f%%)\n", millis(),
                       writeCount, totalWriteTime, writePercent);
 
-        String filePath = uploadPath;
-        if (!filePath.endsWith("/")) filePath += "/";
-        filePath += uploadFileName;
-        clearEpubCacheIfNeeded(filePath);
+        clearEpubCacheIfNeeded(uploadFilePath);
       }
     }
   } else if (upload.status == UPLOAD_FILE_ABORTED) {
     freeUploadBuffer();
     if (uploadFile) {
       uploadFile.close();
-
-      String filePath = uploadPath;
-      if (!filePath.endsWith("/")) filePath += "/";
-      filePath += uploadFileName;
-      SdMan.remove(filePath.c_str());
+      SdMan.remove(uploadTempPath.c_str());
     }
     uploadError = "Upload aborted";
     Serial.printf("[%lu] [WEB] Upload aborted\n", millis());
@@ -1557,6 +1644,22 @@ void LocalServer::handleCreateFolder() const {
   if (!folderPath.endsWith("/")) folderPath += "/";
   folderPath += folderName;
 
+  // The home page asks for the identity folders before uploading the photo; create them the same way
+  // handleDeviceIdentityPost() does rather than opening hidden folders to mkdir in general.
+  if (strcasecmp(folderPath.c_str(), "/.system") == 0 || strcasecmp(folderPath.c_str(), DEVICE_IDENTITY_DIR) == 0) {
+    if (ensureDeviceIdentityDir()) {
+      server->send(200, "text/plain", "Folder created: " + folderName);
+    } else {
+      server->send(500, "text/plain", "Failed to create folder");
+    }
+    return;
+  }
+
+  if (!isSafeName(folderName) || isProtectedPath(parentPath)) {
+    server->send(400, "text/plain", "Invalid folder name");
+    return;
+  }
+
   Serial.printf("[%lu] [WEB] Creating folder: %s\n", millis(), folderPath.c_str());
 
   if (SdMan.exists(folderPath.c_str())) {
@@ -1591,20 +1694,10 @@ void LocalServer::handleDelete() const {
     itemPath = "/" + itemPath;
   }
 
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-
-  if (itemName.startsWith(".")) {
+  if (isProtectedPath(itemPath)) {
     Serial.printf("[%lu] [WEB] Delete rejected - hidden/system item: %s\n", millis(), itemPath.c_str());
     server->send(403, "text/plain", "Cannot delete system files");
     return;
-  }
-
-  for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-    if (itemName.equals(HIDDEN_ITEMS[i])) {
-      Serial.printf("[%lu] [WEB] Delete rejected - protected item: %s\n", millis(), itemPath.c_str());
-      server->send(403, "text/plain", "Cannot delete protected items");
-      return;
-    }
   }
 
   if (!SdMan.exists(itemPath.c_str())) {
@@ -1697,26 +1790,17 @@ void LocalServer::handleRename() const {
     itemPath = itemPath.substring(0, itemPath.length() - 1);
   }
 
-  if (newName.isEmpty() || newName.indexOf('/') != -1 || newName.indexOf('\\') != -1 || newName == "." ||
-      newName == "..") {
+  if (!isSafeName(newName)) {
     server->send(400, "text/plain", "Invalid name");
     return;
   }
 
   const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
 
-  if (itemName.startsWith(".")) {
+  if (isProtectedPath(itemPath)) {
     Serial.printf("[%lu] [WEB] Rename rejected - hidden/system item: %s\n", millis(), itemPath.c_str());
     server->send(403, "text/plain", "Cannot rename system files");
     return;
-  }
-
-  for (size_t i = 0; i < HIDDEN_ITEMS_COUNT; i++) {
-    if (itemName.equals(HIDDEN_ITEMS[i])) {
-      Serial.printf("[%lu] [WEB] Rename rejected - protected item: %s\n", millis(), itemPath.c_str());
-      server->send(403, "text/plain", "Cannot rename protected items");
-      return;
-    }
   }
 
   if (!SdMan.exists(itemPath.c_str())) {
@@ -1783,12 +1867,8 @@ void LocalServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload,
 
       if (wsUploadInProgress && wsUploadFile) {
         wsUploadFile.close();
-
-        String filePath = wsUploadPath;
-        if (!filePath.endsWith("/")) filePath += "/";
-        filePath += wsUploadFileName;
-        SdMan.remove(filePath.c_str());
-        Serial.printf("[%lu] [WS] Deleted incomplete upload: %s\n", millis(), filePath.c_str());
+        SdMan.remove(wsUploadTempPath.c_str());
+        Serial.printf("[%lu] [WS] Deleted incomplete upload: %s\n", millis(), wsUploadTempPath.c_str());
       }
       wsUploadInProgress = false;
       break;
@@ -1806,6 +1886,13 @@ void LocalServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload,
         int firstColon = msg.indexOf(':', 6);
         int secondColon = msg.indexOf(':', firstColon + 1);
 
+        if (wsUploadInProgress && wsUploadFile) {
+          // A new START on an unfinished upload: drop the old partial file.
+          wsUploadFile.close();
+          SdMan.remove(wsUploadTempPath.c_str());
+          wsUploadInProgress = false;
+        }
+
         if (firstColon > 0 && secondColon > 0) {
           wsUploadFileName = msg.substring(6, firstColon);
           wsUploadSize = msg.substring(firstColon + 1, secondColon).toInt();
@@ -1818,20 +1905,28 @@ void LocalServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload,
             wsUploadPath = wsUploadPath.substring(0, wsUploadPath.length() - 1);
           }
 
+          if (!isSafeName(wsUploadFileName) ||
+              (isProtectedPath(wsUploadPath) && !isIdentityPhotoUpload(wsUploadPath, wsUploadFileName))) {
+            wsServer->sendTXT(num, "ERROR:Invalid upload path");
+            wsUploadInProgress = false;
+            return;
+          }
+
           String filePath = wsUploadPath;
           if (!filePath.endsWith("/")) filePath += "/";
           filePath += wsUploadFileName;
+          wsUploadTempPath = filePath + UPLOAD_TEMP_SUFFIX;
 
           Serial.printf("[%lu] [WS] Starting upload: %s (%d bytes) to %s\n", millis(), wsUploadFileName.c_str(),
                         wsUploadSize, filePath.c_str());
 
           esp_task_wdt_reset();
-          if (SdMan.exists(filePath.c_str())) {
-            SdMan.remove(filePath.c_str());
+          if (SdMan.exists(wsUploadTempPath.c_str())) {
+            SdMan.remove(wsUploadTempPath.c_str());
           }
 
           esp_task_wdt_reset();
-          if (!SdMan.openFileForWrite("WS", filePath, wsUploadFile)) {
+          if (!SdMan.openFileForWrite("WS", wsUploadTempPath, wsUploadFile)) {
             wsServer->sendTXT(num, "ERROR:Failed to create file");
             wsUploadInProgress = false;
             return;
@@ -1859,6 +1954,7 @@ void LocalServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload,
 
       if (written != length) {
         wsUploadFile.close();
+        SdMan.remove(wsUploadTempPath.c_str());
         wsUploadInProgress = false;
         wsServer->sendTXT(num, "ERROR:Write failed - disk full?");
         return;
@@ -1877,6 +1973,15 @@ void LocalServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload,
         wsUploadFile.close();
         wsUploadInProgress = false;
 
+        String filePath = wsUploadPath;
+        if (!filePath.endsWith("/")) filePath += "/";
+        filePath += wsUploadFileName;
+        if (!commitUpload(wsUploadTempPath, filePath)) {
+          wsServer->sendTXT(num, "ERROR:Failed to replace the existing file");
+          lastProgressSent = 0;
+          return;
+        }
+
         wsLastCompleteName = wsUploadFileName;
         wsLastCompleteSize = wsUploadSize;
         wsLastCompleteAt = millis();
@@ -1887,9 +1992,6 @@ void LocalServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* payload,
         Serial.printf("[%lu] [WS] Upload complete: %s (%d bytes in %lu ms, %.1f KB/s)\n", millis(),
                       wsUploadFileName.c_str(), wsUploadSize, elapsed, kbps);
 
-        String filePath = wsUploadPath;
-        if (!filePath.endsWith("/")) filePath += "/";
-        filePath += wsUploadFileName;
         clearEpubCacheIfNeeded(filePath);
 
         wsServer->sendTXT(num, "DONE");

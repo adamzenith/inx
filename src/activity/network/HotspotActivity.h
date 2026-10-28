@@ -125,6 +125,7 @@ class HotspotActivity final : public Activity, public Menu {
   HotspotState state;               /**< Current activity state */
 
   std::unique_ptr<LocalServer> webServer; /**< Web server instance */
+  bool leaveRequested = false;            /**< Back seen while an upload held handleClient() */
   std::string connectedIP;                /**< IP address of the access point */
   std::string connectedSSID;              /**< SSID of the access point */
 

@@ -124,6 +124,7 @@ class LocalNetworkActivity final : public ActivityWithSubactivity, public Menu {
   std::string connectedIP;                /**< IP address of connected WiFi */
   std::string connectedSSID;              /**< SSID of connected WiFi network */
   std::unique_ptr<LocalServer> webServer; /**< Web server instance */
+  bool leaveRequested = false;            /**< Back seen while an upload held handleClient() */
 
   const std::function<void()> onGoBack; /**< Callback invoked when going back */
 };
