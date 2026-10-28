@@ -1863,11 +1863,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     return;
   }
 
-  if (self->skipUntilDepth < self->depth) {
-    self->depth += 1;
-    return;
-  }
-
   self->applyInlineFormattingTags(name);
 
   if (isHeaderTag) {
