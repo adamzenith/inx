@@ -19,6 +19,9 @@ InputManager::InputManager()
       buttonPressFinish(0) {}
 
 void InputManager::begin() {
+  if (!sampleMutex) {
+    sampleMutex = xSemaphoreCreateMutex();
+  }
   pinMode(BUTTON_ADC_PIN_1, INPUT);
   pinMode(BUTTON_ADC_PIN_2, INPUT);
   pinMode(POWER_BUTTON_PIN, INPUT_PULLUP);
@@ -93,14 +96,23 @@ void InputManager::sample(const unsigned long currentTime, uint8_t& outPressed, 
 }
 
 void InputManager::poll() {
+  if (sampleMutex && xSemaphoreTake(sampleMutex, 0) != pdTRUE) {
+    return;  // update() is sampling right now
+  }
   uint8_t pressed = 0;
   uint8_t released = 0;
   sample(millis(), pressed, released);
   latchedPressed |= pressed;
   latchedReleased |= released;
+  if (sampleMutex) {
+    xSemaphoreGive(sampleMutex);
+  }
 }
 
 void InputManager::update() {
+  if (sampleMutex) {
+    xSemaphoreTake(sampleMutex, portMAX_DELAY);
+  }
   sample(millis(), pressedEvents, releasedEvents);
 
   if (latchedPressed != 0 || latchedReleased != 0) {
@@ -108,6 +120,9 @@ void InputManager::update() {
     releasedEvents |= latchedReleased;
     latchedPressed = 0;
     latchedReleased = 0;
+  }
+  if (sampleMutex) {
+    xSemaphoreGive(sampleMutex);
   }
 
   if (pendingInjectPress != 0) {

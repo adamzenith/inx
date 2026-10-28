@@ -6,6 +6,8 @@
  */
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 class InputManager {
  public:
@@ -88,6 +90,9 @@ class InputManager {
    * Samples the buttons without consuming events: any press/release seen here is latched and reported by
    * the next #update(). Lets a long blocking operation (e.g. an e-ink refresh) keep watching the buttons so
    * a tap that starts and ends inside it isn't lost.
+   *
+   * Safe to call from any task: sampling is serialised with #update(), and a poll that finds an #update()
+   * in progress is skipped, since that update is sampling anyway.
    */
   void poll();
 
@@ -110,6 +115,9 @@ class InputManager {
   unsigned long lastDebounceTime;
   unsigned long buttonPressStart;
   unsigned long buttonPressFinish;
+  // Serialises sample() and the latch hand-over between #poll() on another task and #update() on the main
+  // loop. A mutex rather than a critical section: analogRead() may block on the ADC driver's own lock.
+  SemaphoreHandle_t sampleMutex = nullptr;
 
   static constexpr int NUM_BUTTONS_1 = 4;
   static const int ADC_RANGES_1[];
