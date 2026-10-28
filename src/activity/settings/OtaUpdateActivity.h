@@ -34,6 +34,11 @@ class OtaUpdateActivity : public ActivityWithSubactivity, public Menu {
   TaskHandle_t displayTaskHandle = nullptr;
   SemaphoreHandle_t renderingMutex = nullptr;
   bool updateRequired = false;
+  /** Progress redraw throttle: the updater flags new progress on every chunk, and redrawing non-stop with fast
+   *  refreshes for the whole install burns a latent image into the panel. */
+  int lastDrawnProgressPercent_ = -1;
+  unsigned long lastProgressDrawMs_ = 0;
+  static constexpr unsigned long kProgressRedrawIntervalMs = 1000;
   int sourceSelectedIndex = 0;
   int sdFirmwareSelectedIndex = 0;
   int sdFirmwareScrollOffset = 0;

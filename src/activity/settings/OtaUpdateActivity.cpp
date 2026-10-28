@@ -250,8 +250,20 @@ void OtaUpdateActivity::onExit() {
 
 void OtaUpdateActivity::displayTaskLoop() {
   while (true) {
-    if (updateRequired || updater.getRender()) {
+    bool draw = updateRequired;
+    // getRender() stays set from the first downloaded chunk on, so it only means "progress may have moved".
+    // Redraw when the percentage changes, at most once a second.
+    if (!draw && state == UPDATE_IN_PROGRESS && updater.getRender() && updater.getTotalSize() > 0) {
+      const int percent = static_cast<int>(static_cast<uint64_t>(updater.getProcessedSize()) * 100 /
+                                           updater.getTotalSize());
+      draw = percent != lastDrawnProgressPercent_ && millis() - lastProgressDrawMs_ >= kProgressRedrawIntervalMs;
+      if (draw) {
+        lastDrawnProgressPercent_ = percent;
+      }
+    }
+    if (draw) {
       updateRequired = false;
+      lastProgressDrawMs_ = millis();
       xSemaphoreTake(renderingMutex, portMAX_DELAY);
       render();
       xSemaphoreGive(renderingMutex);
@@ -408,7 +420,13 @@ void OtaUpdateActivity::render() {
                            "Press and hold power button to turn back on", true, EpdFontFamily::REGULAR);
   }
 
-  renderer.displayBuffer();
+  if (state == FINISHED) {
+    // The progress screen sat on the panel for the whole install under fast refreshes. A full refresh clears
+    // that before the restart, so it doesn't reappear as a ghost over the next screens.
+    renderer.displayBuffer(HalDisplay::FULL_REFRESH);
+  } else {
+    renderer.displayBuffer();
+  }
 
   if (state == FINISHED) {
     state = SHUTTING_DOWN;
