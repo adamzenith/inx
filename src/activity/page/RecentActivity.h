@@ -221,8 +221,12 @@ class RecentActivity final : public Activity, public Menu {
    * Overridden from Menu.
    */
   void navigateToSelectedMenu() override {
-    if (tabSelectorIndex == 1) onLibraryOpen();
-    if (tabSelectorIndex == 4) onGoToStatistics();
+    // else-if: each callback switches activity and deletes this object, so nothing may run after it.
+    if (tabSelectorIndex == 1) {
+      onLibraryOpen();
+    } else if (tabSelectorIndex == 4) {
+      onGoToStatistics();
+    }
   }
 
   ViewMode currentViewMode = ViewMode::Flow;

@@ -218,8 +218,12 @@ class LibraryActivity final : public Activity, public Menu {
    * @brief Navigate to selected menu item (Recent or Settings)
    */
   void navigateToSelectedMenu() override {
-    if (tabSelectorIndex == 0) onRecentOpen();
-    if (tabSelectorIndex == 2) onSettingsOpen();
+    // else-if: each callback switches activity and deletes this object, so nothing may run after it.
+    if (tabSelectorIndex == 0) {
+      onRecentOpen();
+    } else if (tabSelectorIndex == 2) {
+      onSettingsOpen();
+    }
   }
 
   /**

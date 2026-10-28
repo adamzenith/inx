@@ -72,10 +72,10 @@ class StatisticActivity final : public Activity, public Menu {
    * Tab indices: 0 = Home, 3 = Sync
    */
   void navigateToSelectedMenu() override {
+    // else-if: each callback switches activity and deletes this object, so nothing may run after it.
     if (tabSelectorIndex == 0 && onGoToRecent) {
       onGoToRecent();
-    }
-    if (tabSelectorIndex == 3 && onSyncOpen) {
+    } else if (tabSelectorIndex == 3 && onSyncOpen) {
       onSyncOpen();
     }
   }

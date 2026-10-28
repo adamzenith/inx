@@ -44,7 +44,11 @@ class SyncActivity final : public ActivityWithSubactivity, public Menu {
   void render() const;
 
   void navigateToSelectedMenu() override {
-    if (tabSelectorIndex == 2 && onSettingsOpen) onSettingsOpen();
-    if (tabSelectorIndex == 4 && onStatisticsOpen) onStatisticsOpen();
+    // else-if: each callback switches activity and deletes this object, so nothing may run after it.
+    if (tabSelectorIndex == 2 && onSettingsOpen) {
+      onSettingsOpen();
+    } else if (tabSelectorIndex == 4 && onStatisticsOpen) {
+      onStatisticsOpen();
+    }
   }
 };
