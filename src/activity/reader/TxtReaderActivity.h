@@ -10,8 +10,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <atomic>
 #include <functional>
-
 #include <vector>
 
 #include "activity/ActivityWithSubactivity.h"
@@ -25,6 +25,12 @@ class TxtReaderActivity final : public ActivityWithSubactivity {
   int totalPages = 1;
   int pagesUntilFullRefresh = 0;
   bool updateRequired = false;
+  // Set by the display task once a page has been drawn; loop() then records the book as the one to reopen
+  // at boot. Recording it before the first render meant a book that crashes while rendering reopened on
+  // every boot.
+  std::atomic<bool> pageShown_{false};
+  bool lastReadRecorded_ = false;
+  void recordLastReadOnceShown();
   const std::function<void()> onGoBack;
   const std::function<void()> onGoToRecent;
 

@@ -5,6 +5,7 @@
 
 #include "ZipFile.h"
 
+#include <FsHelpers.h>
 #include <HardwareSerial.h>
 #include <SDCardManager.h>
 #include <miniz.h>
@@ -138,7 +139,7 @@ bool ZipFile::ensureIndex() {
     const size_t want = std::min<size_t>(kBufSize, fileSize - pos);
     if (want < need) return false;
     file.seek(pos);
-    const size_t got = file.read(buf, want);
+    const size_t got = FsHelpers::readChecked(file, buf, want);
     bufStart = pos;
     bufLen = got;
     return got >= need;
@@ -197,7 +198,7 @@ bool ZipFile::lookupInIndex(const char* filename, FileStatSlim* fileStat) {
   for (; it != end && it->nameHash == hash; ++it) {
     file.seek(it->cdEntryOffset);
     const size_t want = kCentralDirHeaderSize + nameLen;
-    if (file.read(rec, want) != want) continue;
+    if (FsHelpers::readChecked(file, rec, want) != want) continue;
     if (readLe32(rec) != kCentralDirSig || readLe16(rec + 28) != nameLen ||
         memcmp(rec + kCentralDirHeaderSize, filename, nameLen) != 0) {
       continue;
@@ -314,7 +315,7 @@ long ZipFile::getDataOffset(const FileStatSlim& fileStat) {
   const uint64_t fileOffset = fileStat.localHeaderOffset;
 
   file.seek(fileOffset);
-  const size_t read = file.read(pLocalHeader, localHeaderSize);
+  const size_t read = FsHelpers::readChecked(file, pLocalHeader, localHeaderSize);
   if (!wasOpen) {
     close();
   }
@@ -368,10 +369,10 @@ bool ZipFile::loadZipDetails() {
   }
 
   file.seek(fileSize - scanRange);
-  file.read(buffer, scanRange);
+  const bool scanRead = FsHelpers::readChecked(file, buffer, scanRange) == static_cast<size_t>(scanRange);
 
   int foundOffset = -1;
-  for (int i = scanRange - 22; i >= 0; i--) {
+  for (int i = scanRange - 22; scanRead && i >= 0; i--) {
     constexpr uint32_t signature = 0x06054b50;
     uint32_t word;
     memcpy(&word, &buffer[i], sizeof(word));  // buffer offsets are unaligned
@@ -541,7 +542,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
   }
 
   if (fileStat.method == MZ_NO_COMPRESSION) {
-    const size_t dataRead = file.read(data, inflatedDataSize);
+    const size_t dataRead = FsHelpers::readChecked(file, data, inflatedDataSize);
     if (!wasOpen) {
       close();
     }
@@ -562,7 +563,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
       return nullptr;
     }
 
-    const size_t dataRead = file.read(deflatedData, deflatedDataSize);
+    const size_t dataRead = FsHelpers::readChecked(file, deflatedData, deflatedDataSize);
     if (!wasOpen) {
       close();
     }
@@ -628,7 +629,7 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
 
     size_t remaining = inflatedDataSize;
     while (remaining > 0) {
-      const size_t dataRead = file.read(buffer, remaining < chunkSize ? remaining : chunkSize);
+      const size_t dataRead = FsHelpers::readChecked(file, buffer, remaining < chunkSize ? remaining : chunkSize);
       if (dataRead == 0) {
         Serial.printf("[%lu] [ZIP] Could not read more bytes\n", millis());
         free(buffer);
@@ -695,8 +696,8 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
           break;
         }
 
-        fileReadBufferFilledBytes =
-            file.read(fileReadBuffer, fileRemainingBytes < chunkSize ? fileRemainingBytes : chunkSize);
+        fileReadBufferFilledBytes = FsHelpers::readChecked(
+            file, fileReadBuffer, fileRemainingBytes < chunkSize ? fileRemainingBytes : chunkSize);
         fileRemainingBytes -= fileReadBufferFilledBytes;
         fileReadBufferCursor = 0;
 

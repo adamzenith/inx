@@ -5,6 +5,7 @@
 
 #include "KOReaderDocumentId.h"
 
+#include <FsHelpers.h>
 #include <HardwareSerial.h>
 #include <MD5Builder.h>
 #include <SDCardManager.h>
@@ -72,7 +73,7 @@ std::string KOReaderDocumentId::calculate(const std::string& filePath) {
     }
 
     const size_t bytesToRead = std::min(CHUNK_SIZE, fileSize - offset);
-    const size_t bytesRead = file.read(buffer, bytesToRead);
+    const size_t bytesRead = FsHelpers::readChecked(file, buffer, bytesToRead);
 
     if (bytesRead > 0) {
       md5.add(buffer, bytesRead);

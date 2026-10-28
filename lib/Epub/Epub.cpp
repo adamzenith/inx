@@ -226,7 +226,7 @@ bool Epub::extractAndConvertImage(const std::string& itemHref, const std::string
     Serial.printf("[%lu] [EBP-IMG] BMP copy: %s\n", static_cast<unsigned long>(millis()), itemHref.c_str());
     uint8_t buf[2048];
     while (sourceFile.available()) {
-      size_t r = sourceFile.read(buf, sizeof(buf));
+      size_t r = FsHelpers::readChecked(sourceFile, buf, sizeof(buf));
       destFile.write(buf, r);
     }
     success = true;
@@ -329,7 +329,7 @@ bool Epub::extractAndConvertImageFullScreen(const std::string& itemHref, const s
         Serial.printf("[EBP] BMP resize failed, copying raw cover: %s\n", itemHref.c_str());
         uint8_t buf[2048];
         while (sourceFile.available()) {
-          size_t r = sourceFile.read(buf, sizeof(buf));
+          size_t r = FsHelpers::readChecked(sourceFile, buf, sizeof(buf));
           destFile.write(buf, r);
         }
         success = true;
@@ -338,7 +338,7 @@ bool Epub::extractAndConvertImageFullScreen(const std::string& itemHref, const s
       Serial.printf("[EBP] Source is already BMP for cover, copying directly: %s\n", itemHref.c_str());
       uint8_t buf[2048];
       while (sourceFile.available()) {
-        size_t r = sourceFile.read(buf, sizeof(buf));
+        size_t r = FsHelpers::readChecked(sourceFile, buf, sizeof(buf));
         destFile.write(buf, r);
       }
       success = true;
@@ -529,7 +529,7 @@ bool Epub::parseTocNcxFile() const {
   }
   uint8_t buf[1024];
   while (f.available()) {
-    size_t r = f.read(buf, 1024);
+    size_t r = FsHelpers::readChecked(f, buf, 1024);
     if (parser.write(buf, r) != r) break;
   }
   f.close();
@@ -558,7 +558,7 @@ bool Epub::parseTocNavFile() const {
   }
   uint8_t buf[1024];
   while (f.available()) {
-    size_t r = f.read(buf, 1024);
+    size_t r = FsHelpers::readChecked(f, buf, 1024);
     if (parser.write(buf, r) != r) break;
   }
   f.close();

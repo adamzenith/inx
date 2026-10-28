@@ -182,9 +182,6 @@ void XtcReaderActivity::onEnter() {
   ensureThumbnailExists();
   initStats();
 
-  APP_STATE.lastRead = xtc->getPath();
-  APP_STATE.saveToFile();
-
   const uint32_t n = xtc->getPageCount();
   float progressFrac = 0.f;
   if (n > 0) {
@@ -220,8 +217,10 @@ void XtcReaderActivity::onExit() {
     }
     const float progressFrac = (n > 0) ? (static_cast<float>(progPage) + 1.f) / static_cast<float>(n) : 0.f;
     RECENT_BOOKS.addBook(xtc->getPath(), xtc->getCachePath(), xtc->getTitle(), xtc->getAuthor(), progressFrac);
-    APP_STATE.lastRead = xtc->getPath();
-    APP_STATE.saveToFile();
+    if (pageShown_) {
+      APP_STATE.lastRead = xtc->getPath();
+      APP_STATE.saveToFile();
+    }
   }
 
   vSemaphoreDelete(renderingMutex);
@@ -229,7 +228,15 @@ void XtcReaderActivity::onExit() {
   xtc.reset();
 }
 
+void XtcReaderActivity::recordLastReadOnceShown() {
+  if (lastReadRecorded_ || !pageShown_ || !xtc) return;
+  lastReadRecorded_ = true;
+  APP_STATE.lastRead = xtc->getPath();
+  APP_STATE.saveToFile();
+}
+
 void XtcReaderActivity::loop() {
+  recordLastReadOnceShown();
   if (subActivity) {
     subActivity->loop();
     return;
@@ -617,10 +624,12 @@ void XtcReaderActivity::renderScreen() {
     }
     saveBookStatsToFile();
     renderEndOfBookStats();
+    pageShown_ = true;
     return;
   }
 
   renderPage();
+  pageShown_ = true;
   saveProgress();
 }
 

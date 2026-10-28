@@ -407,7 +407,7 @@ bool BookMetadataCache::extractAndCacheCssFiles(const std::string& epubPath) {
   containerContent.reserve(tempFile.size());
   uint8_t buf[256];
   while (tempFile.available()) {
-    size_t len = tempFile.read(buf, sizeof(buf));
+    size_t len = FsHelpers::readChecked(tempFile, buf, sizeof(buf));
     containerContent.append(reinterpret_cast<char*>(buf), len);
   }
   tempFile.close();
@@ -475,7 +475,7 @@ bool BookMetadataCache::extractAndCacheCssFiles(const std::string& epubPath) {
   std::string opfContent;
   opfContent.reserve(tempFile.size());
   while (tempFile.available()) {
-    size_t len = tempFile.read(buf, sizeof(buf));
+    size_t len = FsHelpers::readChecked(tempFile, buf, sizeof(buf));
     opfContent.append(reinterpret_cast<char*>(buf), len);
   }
   tempFile.close();
@@ -571,7 +571,7 @@ bool BookMetadataCache::extractAndCacheCssFiles(const std::string& epubPath) {
                   cssContent.reserve(cssTempFile.size());
                   uint8_t cssBuf[1024];
                   while (cssTempFile.available()) {
-                    size_t len = cssTempFile.read(cssBuf, sizeof(cssBuf));
+                    size_t len = FsHelpers::readChecked(cssTempFile, cssBuf, sizeof(cssBuf));
                     cssContent.append(reinterpret_cast<char*>(cssBuf), len);
                   }
                   cssTempFile.close();

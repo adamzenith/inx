@@ -12,6 +12,7 @@
 
 #include "Xtc.h"
 
+#include <FsHelpers.h>
 #include <HardwareSerial.h>
 #include <SDCardManager.h>
 
@@ -309,7 +310,7 @@ bool Xtc::generateThumbBmp() const {
         if (SdMan.openFileForWrite("XTC", getThumbBmpPath(), dst)) {
           uint8_t buffer[512];
           while (src.available()) {
-            size_t bytesRead = src.read(buffer, sizeof(buffer));
+            size_t bytesRead = FsHelpers::readChecked(src, buffer, sizeof(buffer));
             dst.write(buffer, bytesRead);
           }
           dst.close();

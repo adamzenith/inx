@@ -905,7 +905,7 @@ void EpubActivity::onExit() {
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   mappedInput.setInvertDirectionalAxes180(false);
 
-  if (epub) {
+  if (epub && pageShown_) {
     APP_STATE.lastRead = epub->getPath();
   }
   APP_STATE.saveToFile();
@@ -1867,6 +1867,7 @@ void EpubActivity::renderScreen(const bool clearFramebuffer) {
 
   renderContents(std::move(page), info.totalMarginTop, info.totalMarginRight, info.totalMarginBottom,
                  info.totalMarginLeft);
+  pageShown_ = true;
   renderer.runRefreshJob();  // no-op if it already ran during the refresh
 
   if (settingsDrawerVisible && settingsDrawer) settingsDrawer->render();
@@ -2529,5 +2530,6 @@ void EpubActivity::saveBookStats() {
 void EpubActivity::displayBookStats() {
   if (epub) {
     readingStats_.display(renderer, *epub);
+    pageShown_ = true;
   }
 }

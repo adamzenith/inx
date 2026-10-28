@@ -643,7 +643,7 @@ bool ChapterHtmlSlimParser::parseHtmlThroughExpat(const bool callProgressPopup) 
       failByte = XML_GetCurrentByteIndex(parser);
       break;
     }
-    const size_t len = file.read(buf, 1024);
+    const size_t len = FsHelpers::readChecked(file, buf, 1024);
     bytesReadTotal += static_cast<uint32_t>(len);
     done = (len == 0);
     if (XML_ParseBuffer(parser, static_cast<int>(len), done) == XML_STATUS_ERROR) {

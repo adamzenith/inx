@@ -125,7 +125,7 @@ bool Txt::generateCoverBmp() const {
     }
     uint8_t buffer[1024];
     while (src.available()) {
-      size_t bytesRead = src.read(buffer, sizeof(buffer));
+      size_t bytesRead = FsHelpers::readChecked(src, buffer, sizeof(buffer));
       dst.write(buffer, bytesRead);
     }
     src.close();
@@ -176,7 +176,7 @@ bool Txt::readContent(uint8_t* buffer, size_t offset, size_t length) const {
     return false;
   }
 
-  size_t bytesRead = file.read(buffer, length);
+  size_t bytesRead = FsHelpers::readChecked(file, buffer, length);
   file.close();
 
   return bytesRead > 0;

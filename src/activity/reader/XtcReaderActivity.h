@@ -17,6 +17,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <atomic>
+
 #include "activity/ActivityWithSubactivity.h"
 #include "state/Statistics.h"
 
@@ -27,6 +29,12 @@ class XtcReaderActivity final : public ActivityWithSubactivity {
   uint32_t currentPage = 0;
   int pagesUntilFullRefresh = 0;
   bool updateRequired = false;
+  // Set by the display task once a page has been drawn; loop() then records the book as the one to reopen
+  // at boot. Recording it before the first render meant a book that crashes while rendering reopened on
+  // every boot.
+  std::atomic<bool> pageShown_{false};
+  bool lastReadRecorded_ = false;
+  void recordLastReadOnceShown();
   const std::function<void()> onGoBack;
   const std::function<void()> onGoToRecent;
 

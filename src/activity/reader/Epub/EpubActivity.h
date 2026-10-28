@@ -137,6 +137,9 @@ class EpubActivity final : public ActivityWithSubactivity {
   /** A page turn's progress save is deferred until the reader has been idle this long, keeping the SD write
    *  (and the book.bin reads behind calculateProgress) off the page-turn path. onExit() always flushes. */
   bool progressDirty_ = false;
+  // A page (or the end-of-book stats) has been drawn. Only then is the book recorded as the one to reopen at
+  // boot, so an EPUB that never renders doesn't reopen on every wake.
+  bool pageShown_ = false;
   unsigned long progressDirtyAt_ = 0;
   static constexpr unsigned long kProgressSaveIdleMs = 1500;
   /** The page after the one on screen, deserialized while the panel refreshes (or when a page button goes down)

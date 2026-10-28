@@ -65,8 +65,6 @@ void TxtReaderActivity::onEnter() {
 
   txt->setupCacheDir();
 
-  APP_STATE.lastRead = txt->getPath();
-  APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(txt->getPath(), txt->getCachePath(), "", "");
 
   updateRequired = true;
@@ -96,7 +94,15 @@ void TxtReaderActivity::onExit() {
   FontManager::unloadAllSDFonts();
 }
 
+void TxtReaderActivity::recordLastReadOnceShown() {
+  if (lastReadRecorded_ || !pageShown_ || !txt) return;
+  lastReadRecorded_ = true;
+  APP_STATE.lastRead = txt->getPath();
+  APP_STATE.saveToFile();
+}
+
 void TxtReaderActivity::loop() {
+  recordLastReadOnceShown();
   if (subActivity) {
     subActivity->loop();
     return;
@@ -382,6 +388,7 @@ void TxtReaderActivity::renderScreen() {
 
   renderer.clearScreen();
   renderPage();
+  pageShown_ = true;
 
   saveProgress();
 }
