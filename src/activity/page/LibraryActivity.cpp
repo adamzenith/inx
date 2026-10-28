@@ -682,20 +682,27 @@ uint8_t LibraryActivity::getBookStateFlags(const std::string& path) const {
     return 0;
   }
 
-  auto cached = bookStateCache_.find(path);
-  if (cached != bookStateCache_.end()) {
-    return cached->second;
+  if (!bookStateCachePrimed_) {
+    // Parse books.bin once and remember every tracked book's flags. Looking each path up with findBook()
+    // re-reads and re-parses the whole file per book, which made a library scan O(books x tracked books).
+    for (const auto& book : BOOK_STATE.getAllBooks()) {
+      uint8_t bookFlags = 0;
+      if (book.isFavorite) bookFlags |= BOOK_STATE_FAVORITE;
+      if (book.isReading) bookFlags |= BOOK_STATE_READING;
+      if (book.isFinished) bookFlags |= BOOK_STATE_FINISHED;
+      bookStateCache_[book.path] = bookFlags;
+    }
+    bookStateCachePrimed_ = true;
   }
 
-  uint8_t flags = 0;
-  BookState::Book book;
-  if (BOOK_STATE.findBook(path, book)) {
-    if (book.isFavorite) flags |= BOOK_STATE_FAVORITE;
-    if (book.isReading) flags |= BOOK_STATE_READING;
-    if (book.isFinished) flags |= BOOK_STATE_FINISHED;
-  }
-  bookStateCache_[path] = flags;
-  return flags;
+  // Anything not in the primed cache isn't tracked in books.bin.
+  auto cached = bookStateCache_.find(path);
+  return cached != bookStateCache_.end() ? cached->second : 0;
+}
+
+void LibraryActivity::invalidateBookStateCache() const {
+  std::unordered_map<std::string, uint8_t>().swap(bookStateCache_);
+  bookStateCachePrimed_ = false;
 }
 
 /** Returns the on-disk display cache path for a book's shelf thumbnail. */
@@ -1752,7 +1759,7 @@ void LibraryActivity::onEnter() {
   halfRefreshOnLoadApplied_ = false;
   invalidateLibraryCache();
   std::vector<LibraryItem>().swap(currentPageItems);
-  std::unordered_map<std::string, uint8_t>().swap(bookStateCache_);
+  invalidateBookStateCache();
   std::unordered_map<std::string, bool>().swap(directoryHasBooksCache_);
   std::unordered_map<std::string, std::string>().swap(shelfImagePathCache_);
   freeLibraryShelfBuffer();
@@ -1876,7 +1883,7 @@ void LibraryActivity::onExit() {
   std::vector<LibraryItem>().swap(cachedLibraryItems_);
   cachedLibraryItemsValid_ = false;
   std::vector<BookTags::Entry>().swap(cachedTagEntries_);
-  std::unordered_map<std::string, uint8_t>().swap(bookStateCache_);
+  invalidateBookStateCache();
   std::unordered_map<std::string, bool>().swap(directoryHasBooksCache_);
   freeLibraryShelfBuffer();
   std::unordered_map<std::string, std::string>().swap(shelfImagePathCache_);
@@ -2094,7 +2101,7 @@ void LibraryActivity::handleFavoriteLongPress(int itemCount) {
     if (item.type == LibraryItem::Type::BOOK && !isSupportedImageFile(item.path)) {
       BOOK_STATE.toggleFavorite(item.path, item.displayName);
 
-      bookStateCache_.erase(item.path);
+      invalidateBookStateCache();
       if (favoritesPromoted) {
         loadAllBooksRecursive();
       }
@@ -2273,7 +2280,7 @@ void LibraryActivity::handleConfirmAction(int itemCount) {
 
     BOOK_STATE.setReading(item.path, true, item.displayName);
 
-    bookStateCache_.erase(item.path);
+    invalidateBookStateCache();
     onSelectBook(item.path);
   }
 }

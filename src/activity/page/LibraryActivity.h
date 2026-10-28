@@ -184,6 +184,7 @@ class LibraryActivity final : public Activity, public Menu {
   std::vector<LibraryItem> cachedLibraryItems_;
   bool cachedLibraryItemsValid_ = false;
   mutable std::unordered_map<std::string, uint8_t> bookStateCache_;
+  mutable bool bookStateCachePrimed_ = false;
   std::unordered_map<std::string, bool> directoryHasBooksCache_;
   mutable std::unordered_map<std::string, std::string> shelfImagePathCache_;
 
@@ -433,6 +434,8 @@ class LibraryActivity final : public Activity, public Menu {
   void invalidateLibraryCache();
   /** Returns the cached reading/favorite state flags for a book path. */
   uint8_t getBookStateFlags(const std::string& path) const;
+  /** Drops the cached flags so the next lookup re-reads books.bin (after a favorite/reading change). */
+  void invalidateBookStateCache() const;
   /** Returns the on-disk display cache path for a book's shelf thumbnail. */
   std::string getShelfImagePath(const std::string& bookPath) const;
 
