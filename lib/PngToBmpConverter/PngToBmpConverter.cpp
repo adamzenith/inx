@@ -281,9 +281,9 @@ static bool pngInflateRead(PngDecodeContext& ctx, uint8_t* dest, const size_t le
   ctx.zstream.avail_out = static_cast<unsigned int>(len);
 
   while (ctx.zstream.avail_out > 0) {
-    if (ctx.zstream.avail_in == 0 && !pngLoadIdatInput(ctx)) {
-      return false;
-    }
+    // With the IDAT data used up, the inflater can still hold decoded bytes it has not handed out yet (the
+    // last rows of the image), so keep calling it until it stops making progress.
+    const bool inputLeft = ctx.zstream.avail_in > 0 || pngLoadIdatInput(ctx);
 
     const unsigned int availInBefore = ctx.zstream.avail_in;
     const unsigned int availOutBefore = ctx.zstream.avail_out;
@@ -297,7 +297,7 @@ static bool pngInflateRead(PngDecodeContext& ctx, uint8_t* dest, const size_t le
       return false;
     }
     if (ctx.zstream.avail_in == availInBefore && ctx.zstream.avail_out == availOutBefore) {
-      LOG_ERR("PNG", "Inflate made no progress");
+      if (inputLeft) LOG_ERR("PNG", "Inflate made no progress");
       return false;
     }
   }
