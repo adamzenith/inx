@@ -42,6 +42,8 @@ void KOReaderAuthActivity::onWifiSelectionComplete(const bool success) {
 }
 
 void KOReaderAuthActivity::performAuthentication() {
+  // Keep the radio awake for the request; onExit() turns modem power-save back on.
+  WiFi.setSleep(false);
   const auto result = KOReaderSyncClient::authenticate();
 
   xSemaphoreTake(renderingMutex, portMAX_DELAY);
@@ -87,6 +89,7 @@ void KOReaderAuthActivity::onEnter() {
 void KOReaderAuthActivity::onExit() {
   ActivityWithSubactivity::onExit();
 
+  WiFi.setSleep(true);
   WiFi.disconnect(false);
   delay(100);
   WiFi.mode(WIFI_OFF);

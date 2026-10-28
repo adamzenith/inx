@@ -149,7 +149,10 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
     return NO_CREDENTIALS;
   }
 
-  std::string url = KOREADER_STORE.getBaseUrl() + "/syncs/progress/" + documentHash;
+  // Ask for percentage-only records too (other readers, or KOReader on a reflowed document); the mapper falls
+  // back to the percentage when a record has no XPath.
+  std::string url =
+      KOREADER_STORE.getBaseUrl() + "/syncs/progress/" + documentHash + "?position_kinds=locator,percentage";
   const uint32_t freeHeap = ESP.getFreeHeap();
   if (freeHeap < MIN_HEAP_FOR_TLS) {
     Serial.printf("[%lu] [KOSync] Insufficient heap for TLS: %u bytes free\n", millis(), (unsigned)freeHeap);
@@ -169,7 +172,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
     }
 
     outProgress.document = documentHash;
-    outProgress.progress = doc["progress"].as<std::string>();
+    outProgress.progress = doc["progress"] | "";  // null or missing in a percentage-only record
     outProgress.percentage = doc["percentage"].as<float>();
     outProgress.device = doc["device"].as<std::string>();
     outProgress.deviceId = doc["device_id"].as<std::string>();

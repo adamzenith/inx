@@ -21,34 +21,13 @@ void wifiOff() {
   if (esp_sntp_enabled()) {
     esp_sntp_stop();
   }
+  WiFi.setSleep(true);
   WiFi.disconnect(false);
   delay(100);
   WiFi.mode(WIFI_OFF);
   delay(100);
 }
 
-void syncTimeWithNTP() {
-  if (esp_sntp_enabled()) {
-    esp_sntp_stop();
-  }
-
-  esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-  esp_sntp_setservername(0, "pool.ntp.org");
-  esp_sntp_init();
-
-  int retry = 0;
-  const int maxRetries = 50;
-  while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && retry < maxRetries) {
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-    retry++;
-  }
-
-  if (retry < maxRetries) {
-    Serial.printf("[%lu] [KOSync] NTP time synced\n", millis());
-  } else {
-    Serial.printf("[%lu] [KOSync] NTP sync timeout, using fallback\n", millis());
-  }
-}
 }  // namespace
 
 void KOReaderSyncActivity::taskTrampoline(void* param) {
@@ -69,13 +48,6 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
 
   xSemaphoreTake(renderingMutex, portMAX_DELAY);
   state = SYNCING;
-  statusMessage = "Syncing time...";
-  xSemaphoreGive(renderingMutex);
-  updateRequired = true;
-
-  syncTimeWithNTP();
-
-  xSemaphoreTake(renderingMutex, portMAX_DELAY);
   statusMessage = "Calculating document hash...";
   xSemaphoreGive(renderingMutex);
   updateRequired = true;
@@ -84,6 +56,10 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
 }
 
 void KOReaderSyncActivity::performSync() {
+  // Modem power-save can make the radio doze between requests, so authentication and progress requests
+  // time out on some networks. wifiOff() turns it back on.
+  WiFi.setSleep(false);
+
   if (KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME) {
     documentHash = KOReaderDocumentId::calculateFromFilename(epubPath);
   } else {
@@ -192,19 +168,15 @@ void KOReaderSyncActivity::onEnter() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[%lu] [KOSync] Already connected to WiFi\n", millis());
+    // No NTP sync first: the requests carry no client timestamp, and TLS here does not check certificate
+    // dates, so waiting up to 5 s for the clock bought nothing.
     state = SYNCING;
-    statusMessage = "Syncing time...";
+    statusMessage = "Calculating document hash...";
     updateRequired = true;
 
     xTaskCreate(
         [](void* param) {
           auto* self = static_cast<KOReaderSyncActivity*>(param);
-
-          syncTimeWithNTP();
-          xSemaphoreTake(self->renderingMutex, portMAX_DELAY);
-          self->statusMessage = "Calculating document hash...";
-          xSemaphoreGive(self->renderingMutex);
-          self->updateRequired = true;
           self->performSync();
           vTaskDelete(nullptr);
         },
