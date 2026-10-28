@@ -10,6 +10,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <functional>
+
 #include <vector>
 
 #include "activity/ActivityWithSubactivity.h"
