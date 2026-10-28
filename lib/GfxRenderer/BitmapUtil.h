@@ -6,6 +6,7 @@
  */
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 #include "ImageToneDither.h"
@@ -33,17 +34,21 @@ void createBmpHeader(BmpHeader* bmpHeader, int width, int height, BmpRowOrder ro
 
 class Atkinson1BitDitherer {
  public:
-  explicit Atkinson1BitDitherer(int width) : width(width) {
-    errorRow0 = new int16_t[width + 4]();
-    errorRow1 = new int16_t[width + 4]();
-    errorRow2 = new int16_t[width + 4]();
+  // The three error rows share one allocation. If it fails, pixels fall back to a plain threshold instead
+  // of the throwing new[] aborting the device.
+  explicit Atkinson1BitDitherer(int width) : width(width > 0 ? width : 0) {
+    if (this->width == 0) return;
+    const size_t rowSize = static_cast<size_t>(this->width) + 4;
+    errorRows = static_cast<int16_t*>(calloc(rowSize * 3, sizeof(int16_t)));
+    if (!errorRows) return;
+    errorRow0 = errorRows;
+    errorRow1 = errorRow0 + rowSize;
+    errorRow2 = errorRow1 + rowSize;
   }
 
-  ~Atkinson1BitDitherer() {
-    delete[] errorRow0;
-    delete[] errorRow1;
-    delete[] errorRow2;
-  }
+  ~Atkinson1BitDitherer() { free(errorRows); }
+
+  bool isValid() const { return errorRows != nullptr; }
 
   Atkinson1BitDitherer(const Atkinson1BitDitherer& other) = delete;
 
@@ -51,6 +56,7 @@ class Atkinson1BitDitherer {
 
   uint8_t processPixel(int gray, int x) {
     gray = adjustOneBitPixel(gray);
+    if (!isValid()) return gray < 128 ? 0 : 1;
 
     int adjusted = gray + errorRow0[x + 2];
     if (adjusted < 0) adjusted = 0;
@@ -79,6 +85,7 @@ class Atkinson1BitDitherer {
   }
 
   void nextRow() {
+    if (!isValid()) return;
     int16_t* temp = errorRow0;
     errorRow0 = errorRow1;
     errorRow1 = errorRow2;
@@ -87,16 +94,16 @@ class Atkinson1BitDitherer {
   }
 
   void reset() {
-    memset(errorRow0, 0, (width + 4) * sizeof(int16_t));
-    memset(errorRow1, 0, (width + 4) * sizeof(int16_t));
-    memset(errorRow2, 0, (width + 4) * sizeof(int16_t));
+    if (!isValid()) return;
+    memset(errorRows, 0, (width + 4) * 3 * sizeof(int16_t));
   }
 
  private:
   int width;
-  int16_t* errorRow0;
-  int16_t* errorRow1;
-  int16_t* errorRow2;
+  int16_t* errorRows = nullptr;
+  int16_t* errorRow0 = nullptr;
+  int16_t* errorRow1 = nullptr;
+  int16_t* errorRow2 = nullptr;
 };
 
 uint8_t epubWebRgb565ToGray8Rounded(uint16_t rgb565LittleEndian);

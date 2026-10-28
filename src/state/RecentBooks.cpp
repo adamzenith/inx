@@ -10,6 +10,7 @@
 #include <Serialization.h>
 
 #include <algorithm>
+#include <iterator>
 
 namespace {
 constexpr uint8_t RECENT_BOOKS_FILE_VERSION = 4;
@@ -28,10 +29,13 @@ void RecentBooks::addBook(const std::string& path, const std::string& cachePath,
     if (progress >= 0.0f) {
       it->progress = progress;
     }
-    RecentBook book = *it;
-    recentBooks.erase(it);
-    recentBooks.insert(recentBooks.begin(), book);
+    // Move the entry to the front in place. Copying it out and re-inserting it reallocated all four strings
+    // on every progress save, scattering new allocations among the reader's own.
+    std::rotate(recentBooks.begin(), it, std::next(it));
   } else {
+    if (recentBooks.size() >= MAX_RECENT_BOOKS) {
+      recentBooks.resize(MAX_RECENT_BOOKS - 1);
+    }
     recentBooks.insert(recentBooks.begin(), {path, cachePath, title, author, progress});
   }
 

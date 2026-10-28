@@ -213,16 +213,10 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     bytesPerRow = (outWidth * 2 + 31) / 32 * 4;
   }
 
-  uint8_t* rowBuffer = (uint8_t*)malloc(bytesPerRow);
-  uint8_t* mcuRowBuffer =
-      (uint8_t*)malloc(static_cast<size_t>(imageInfo.m_width) * static_cast<size_t>(imageInfo.m_MCUHeight));
-
   struct PixelAccumulator {
     uint32_t sum;
     uint16_t count;
   };
-
-  PixelAccumulator* accum = new PixelAccumulator[outWidth]();
 
   struct ScaleMapEntry {
     uint16_t startX;
@@ -230,7 +224,27 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     uint16_t count;
   };
 
-  ScaleMapEntry* scaleMap = new ScaleMapEntry[outWidth];
+  // The per-row tables share one allocation (they were six), ordered so each starts aligned for its type.
+  // The MCU row buffer, by far the largest, stays separate so no single block has to be bigger than needed.
+  const size_t accumBytes = sizeof(PixelAccumulator) * static_cast<size_t>(outWidth);
+  const size_t thresholdBytes = sizeof(uint32_t) * (static_cast<size_t>(outHeight) + 1);
+  const size_t scaleMapBytes = (sizeof(ScaleMapEntry) * static_cast<size_t>(outWidth) + 3) & ~static_cast<size_t>(3);
+  const size_t lookupBytes = static_cast<size_t>(outWidth);
+  auto* rowScratch = static_cast<uint8_t*>(
+      calloc(accumBytes + thresholdBytes + scaleMapBytes + lookupBytes + static_cast<size_t>(bytesPerRow), 1));
+  uint8_t* mcuRowBuffer =
+      (uint8_t*)malloc(static_cast<size_t>(imageInfo.m_width) * static_cast<size_t>(imageInfo.m_MCUHeight));
+  if (!rowScratch || !mcuRowBuffer) {
+    Serial.printf("[%lu] [JPG] Failed to allocate row buffers\n", millis());
+    free(rowScratch);
+    free(mcuRowBuffer);
+    return false;
+  }
+  auto* accum = reinterpret_cast<PixelAccumulator*>(rowScratch);
+  auto* outYThresholds = reinterpret_cast<uint32_t*>(rowScratch + accumBytes);
+  auto* scaleMap = reinterpret_cast<ScaleMapEntry*>(rowScratch + accumBytes + thresholdBytes);
+  uint8_t* lookup = rowScratch + accumBytes + thresholdBytes + scaleMapBytes;
+  uint8_t* rowBuffer = lookup + lookupBytes;
 
   for (int ox = 0; ox < outWidth; ox++) {
     int sxS = (ox * scaleX_fp) >> 16;
@@ -241,7 +255,6 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     scaleMap[ox].count = sxE - sxS;
   }
 
-  uint32_t* outYThresholds = new uint32_t[outHeight + 1];
   for (int oy = 0; oy <= outHeight; oy++) {
     outYThresholds[oy] = (uint32_t)oy * scaleY_fp;
   }
@@ -264,12 +277,12 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   uint8_t* shiftAmounts = nullptr;
 
   if (oneBit) {
-    bitMasks = new uint8_t[outWidth];
+    bitMasks = lookup;
     for (int x = 0; x < outWidth; x++) {
       bitMasks[x] = 1 << (7 - (x % 8));
     }
   } else {
-    shiftAmounts = new uint8_t[outWidth];
+    shiftAmounts = lookup;
     for (int x = 0; x < outWidth; x++) {
       shiftAmounts[x] = 6 - ((x * 2) % 8);
     }
@@ -386,14 +399,8 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
     }
   }
 
-  free(rowBuffer);
+  free(rowScratch);
   free(mcuRowBuffer);
-  delete[] accum;
-  delete[] scaleMap;
-  delete[] outYThresholds;
-
-  if (bitMasks) delete[] bitMasks;
-  if (shiftAmounts) delete[] shiftAmounts;
 
   if (ditherer) delete ditherer;
   if (ditherer1bit) delete ditherer1bit;

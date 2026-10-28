@@ -34,5 +34,7 @@ class FourToneImageDitherer {
  private:
   int width_ = 0;
   int row_ = 0;
+  // All nine error rows (three per plane) live in one allocation; errorRows_ rotates pointers into it.
+  int16_t* errorBlock_ = nullptr;
   int16_t* errorRows_[3][3] = {};
 };

@@ -40,39 +40,22 @@ FourToneImageDitherer::FourToneImageDitherer(const int width) : width_(width) {
     width_ = 0;
     return;
   }
-  for (int plane = 0; plane < 3; plane++) {
-    for (int row = 0; row < 3; row++) {
-      errorRows_[plane][row] = static_cast<int16_t*>(std::calloc(static_cast<size_t>(width_) + 4u, sizeof(int16_t)));
-    }
-  }
-  if (!ok()) {
-    for (int plane = 0; plane < 3; plane++) {
-      for (int row = 0; row < 3; row++) {
-        std::free(errorRows_[plane][row]);
-        errorRows_[plane][row] = nullptr;
-      }
-    }
+  const size_t rowSize = static_cast<size_t>(width_) + 4u;
+  errorBlock_ = static_cast<int16_t*>(std::calloc(rowSize * 9u, sizeof(int16_t)));
+  if (!errorBlock_) {
     width_ = 0;
+    return;
   }
-}
-
-FourToneImageDitherer::~FourToneImageDitherer() {
   for (int plane = 0; plane < 3; plane++) {
     for (int row = 0; row < 3; row++) {
-      std::free(errorRows_[plane][row]);
+      errorRows_[plane][row] = errorBlock_ + rowSize * static_cast<size_t>(plane * 3 + row);
     }
   }
 }
 
-bool FourToneImageDitherer::ok() const {
-  if (width_ <= 0) return false;
-  for (int plane = 0; plane < 3; plane++) {
-    for (int row = 0; row < 3; row++) {
-      if (!errorRows_[plane][row]) return false;
-    }
-  }
-  return true;
-}
+FourToneImageDitherer::~FourToneImageDitherer() { std::free(errorBlock_); }
+
+bool FourToneImageDitherer::ok() const { return width_ > 0 && errorBlock_ != nullptr; }
 
 ImageToneSample FourToneImageDitherer::quantize(const int gray) {
   const int g = clamp255(gray);

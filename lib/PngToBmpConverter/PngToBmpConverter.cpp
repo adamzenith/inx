@@ -191,8 +191,9 @@ struct PngDecodeContext {
   uint32_t rawRowBytes;   // bytes per raw row (without filter byte)
 
   // Scanline buffers
-  uint8_t* currentRow;   // current defiltered scanline
-  uint8_t* previousRow;  // previous defiltered scanline
+  uint8_t* currentRow;     // current defiltered scanline
+  uint8_t* previousRow;    // previous defiltered scanline
+  uint8_t* scanlineBlock;  // the one allocation both scanlines point into (they swap every row)
 
   // Chunk reading state
   uint32_t chunkBytesRemaining;  // bytes left in current IDAT chunk
@@ -576,15 +577,14 @@ static bool pngDecodeBegin(FsFile& pngFile, PngDecodeContext& ctx) {
   ctx.paletteSize = 0;
   memset(ctx.paletteAlpha, 255, sizeof(ctx.paletteAlpha));
 
-  // Allocate scanline buffers
-  ctx.currentRow = static_cast<uint8_t*>(malloc(rawRowBytes));
-  ctx.previousRow = static_cast<uint8_t*>(calloc(rawRowBytes, 1));
-  if (!ctx.currentRow || !ctx.previousRow) {
+  // Both scanline buffers in one allocation
+  ctx.scanlineBlock = static_cast<uint8_t*>(calloc(static_cast<size_t>(rawRowBytes) * 2, 1));
+  if (!ctx.scanlineBlock) {
     LOG_ERR("PNG", "Failed to allocate scanline buffers (%u bytes each)", rawRowBytes);
-    free(ctx.currentRow);
-    free(ctx.previousRow);
     return false;
   }
+  ctx.currentRow = ctx.scanlineBlock;
+  ctx.previousRow = ctx.scanlineBlock + rawRowBytes;
 
   // Scan for PLTE chunk (palette) and first IDAT chunk
   bool foundIdat = false;
@@ -639,15 +639,15 @@ static bool pngDecodeBegin(FsFile& pngFile, PngDecodeContext& ctx) {
 
   if (!foundIdat) {
     LOG_ERR("PNG", "No IDAT chunk found");
-    free(ctx.currentRow);
-    free(ctx.previousRow);
+    free(ctx.scanlineBlock);
+    ctx.scanlineBlock = ctx.currentRow = ctx.previousRow = nullptr;
     return false;
   }
 
   if (mz_inflateInit(&ctx.zstream) != MZ_OK) {
     LOG_ERR("PNG", "Failed to init inflate stream");
-    free(ctx.currentRow);
-    free(ctx.previousRow);
+    free(ctx.scanlineBlock);
+    ctx.scanlineBlock = ctx.currentRow = ctx.previousRow = nullptr;
     return false;
   }
   ctx.zstreamInitialized = true;
@@ -659,8 +659,8 @@ static void pngDecodeReleaseScanlines(PngDecodeContext& ctx) {
     mz_inflateEnd(&ctx.zstream);
     ctx.zstreamInitialized = false;
   }
-  free(ctx.currentRow);
-  free(ctx.previousRow);
+  free(ctx.scanlineBlock);
+  ctx.scanlineBlock = nullptr;
   ctx.currentRow = nullptr;
   ctx.previousRow = nullptr;
 }
@@ -735,14 +735,23 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
     bytesPerRow = (outWidth * 2 + 31) / 32 * 4;
   }
 
-  // Allocate BMP row buffer
-  auto* rowBuffer = static_cast<uint8_t*>(malloc(bytesPerRow));
-  if (!rowBuffer) {
-    LOG_ERR("PNG", "Failed to allocate row buffer");
+  // The per-row buffers share one allocation: scaling accumulators (only when scaling), the BMP output row,
+  // and the grayscale source row that each scanline is batch-converted into to avoid per-pixel
+  // getPixelGray() switch overhead in the hot loops.
+  const size_t accumBytes = needsScaling ? sizeof(uint32_t) * static_cast<size_t>(outWidth) : 0;
+  const size_t countBytes = needsScaling ? sizeof(uint16_t) * static_cast<size_t>(outWidth) : 0;
+  auto* rowScratch =
+      static_cast<uint8_t*>(calloc(accumBytes + countBytes + static_cast<size_t>(bytesPerRow) + width, 1));
+  if (!rowScratch) {
+    LOG_ERR("PNG", "Failed to allocate row buffers");
     pngDecodeReleaseScanlines(ctx);
     delete ctxPtr;
     return false;
   }
+  uint32_t* rowAccum = needsScaling ? reinterpret_cast<uint32_t*>(rowScratch) : nullptr;
+  uint16_t* rowCount = needsScaling ? reinterpret_cast<uint16_t*>(rowScratch + accumBytes) : nullptr;
+  uint8_t* rowBuffer = rowScratch + accumBytes + countBytes;
+  uint8_t* grayRow = rowBuffer + bytesPerRow;
 
   FourToneImageDitherer* imageDitherer = nullptr;
   Atkinson1BitDitherer* atkinson1BitDitherer = nullptr;
@@ -753,32 +762,8 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
     imageDitherer = new FourToneImageDitherer(outWidth);
   }
 
-  // Scaling accumulators
-  uint32_t* rowAccum = nullptr;
-  uint16_t* rowCount = nullptr;
   int currentOutY = 0;
-  uint32_t nextOutY_srcStart = 0;
-
-  if (needsScaling) {
-    rowAccum = new uint32_t[outWidth]();
-    rowCount = new uint16_t[outWidth]();
-    nextOutY_srcStart = scaleY_fp;
-  }
-
-  // Allocate grayscale row buffer - batch-convert each scanline to avoid
-  // per-pixel getPixelGray() switch overhead in the hot loops
-  auto* grayRow = static_cast<uint8_t*>(malloc(width));
-  if (!grayRow) {
-    LOG_ERR("PNG", "Failed to allocate grayscale row buffer");
-    delete[] rowAccum;
-    delete[] rowCount;
-    delete imageDitherer;
-    delete atkinson1BitDitherer;
-    free(rowBuffer);
-    pngDecodeReleaseScanlines(ctx);
-    delete ctxPtr;
-    return false;
-  }
+  uint32_t nextOutY_srcStart = needsScaling ? scaleY_fp : 0;
 
   bool success = true;
 
@@ -903,12 +888,9 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
   }
 
   // Clean up
-  free(grayRow);
-  delete[] rowAccum;
-  delete[] rowCount;
   delete imageDitherer;
   delete atkinson1BitDitherer;
-  free(rowBuffer);
+  free(rowScratch);
   pngDecodeReleaseScanlines(ctx);
   delete ctxPtr;
 
@@ -941,7 +923,8 @@ bool PngToBmpConverter::pngFileToEpubWebStyle2BitBmpStream(FsFile& pngFile, Prin
 
   epubWebWrite2BitBmpHeader(bmpOut, dw, dh);
 
-  uint8_t* grayDw = static_cast<uint8_t*>(malloc(static_cast<size_t>(dw)));
+  // The scaled output row and the full-width source row share one allocation.
+  uint8_t* grayDw = static_cast<uint8_t*>(malloc(static_cast<size_t>(dw) + ctx.width));
   EpubWeb2BitRowPacker packer;
   if (!grayDw || !packer.init(dw)) {
     free(grayDw);
@@ -951,23 +934,13 @@ bool PngToBmpConverter::pngFileToEpubWebStyle2BitBmpStream(FsFile& pngFile, Prin
     pngFile.seek(originalPos);
     return false;
   }
-
-  auto* grayRow = static_cast<uint8_t*>(malloc(static_cast<size_t>(ctx.width)));
-  if (!grayRow) {
-    free(grayDw);
-    packer.freeBuffers();
-    pngDecodeReleaseScanlines(ctx);
-    delete ctxPtr;
-    pngFile.seek(originalPos);
-    return false;
-  }
+  uint8_t* grayRow = grayDw + dw;
 
   int currentSrcY = -1;
   for (int oy = 0; oy < dh; oy++) {
     const int sy = (dh <= 1) ? 0 : std::min(sh - 1, (oy * sh) / dh);
     while (currentSrcY < sy) {
       if (!decodeScanline(ctx)) {
-        free(grayRow);
         free(grayDw);
         packer.freeBuffers();
         pngDecodeReleaseScanlines(ctx);
@@ -984,7 +957,6 @@ bool PngToBmpConverter::pngFileToEpubWebStyle2BitBmpStream(FsFile& pngFile, Prin
       grayDw[ox] = grayRow[static_cast<size_t>(sx)];
     }
     if (!packer.writeGrayRow(bmpOut, grayDw)) {
-      free(grayRow);
       free(grayDw);
       packer.freeBuffers();
       pngDecodeReleaseScanlines(ctx);
@@ -994,7 +966,6 @@ bool PngToBmpConverter::pngFileToEpubWebStyle2BitBmpStream(FsFile& pngFile, Prin
     }
   }
 
-  free(grayRow);
   free(grayDw);
   packer.freeBuffers();
   pngDecodeReleaseScanlines(ctx);
