@@ -29,6 +29,7 @@ class Section {
   FsFile file;
   uint32_t lutOffset = 0;
   std::vector<uint32_t> pageOffsets;
+  bool aborted_ = false;
 
   /**
    * Writes the header information to the section file.
@@ -117,6 +118,8 @@ class Section {
    * @param hyphenationEnabled Whether hyphenation is enabled
    * @param popupFn Optional callback for progress popups during image conversion
    * @param skipImages If true, skip processing new images and only use existing cached images
+   * @param shouldAbort Optional; polled before extraction and once per ~1 KB of HTML in each parse pass.
+   *        Returning true abandons the build (returns false, wasAborted() == true, partial files removed).
    * @return true if section file was successfully created
    */
   bool createSectionFile(int fontId, int headerFontId, int maxFontId, float lineCompression, float wordSpacing,
@@ -126,7 +129,14 @@ class Section {
                          bool skipImages = false, const std::function<void(Page&, uint16_t)>& pageBuiltFn = nullptr,
                          bool warmImageDisplayCache = false,
                          ImageRenderMode warmImageRenderMode = ImageRenderMode::OneBit, bool warmImageQuality = false,
-                         int warmImageYOffset = 0);
+                         int warmImageYOffset = 0, const std::function<bool()>& shouldAbort = nullptr);
+
+  /**
+   * True when the most recent createSectionFile() returned false because its shouldAbort hook fired (as opposed
+   * to a real build failure). In that case neither the section .bin nor the temp chapter HTML is left behind,
+   * so the build can simply be retried later.
+   */
+  bool wasAborted() const { return aborted_; }
 
   /**
    * Loads a specific page from the section file.

@@ -449,20 +449,22 @@ bool TextBlock::serialize(FsFile& file) const {
   return true;
 }
 
-std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
-  uint16_t wc;
-  std::list<std::string> words;
-  std::list<int16_t> wordXpos;
-  std::list<EpdFontFamily::Style> wordStyles;
-  std::list<uint8_t> bionicPrefixBytes;
-  std::list<uint8_t> wordSmallCaps;
-  std::list<uint8_t> wordUnderline;
-  std::list<uint8_t> wordVerticalAlign;
-  std::list<std::string> wordImagePaths;
-  std::list<uint16_t> wordImageW;
-  std::list<uint16_t> wordImageH;
-  Style style;
+namespace {
+/** Reads `count` POD values with one file read (same bytes as `count` sequential readPod calls). */
+template <typename T>
+void readPodArray(FsFile& file, std::vector<T>& values, const size_t count) {
+  values.resize(count);
+  if (count > 0) {
+    file.read(reinterpret_cast<uint8_t*>(values.data()), count * sizeof(T));
+  }
+}
+}  // namespace
 
+std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
+  // Same on-disk layout as before, but each fixed-size per-word array is now read with ONE file read straight
+  // into a vector (instead of one tiny FsFile read per word per field), and no std::list nodes are allocated.
+
+  uint16_t wc;
   serialization::readPod(file, wc);
 
   if (wc > 10000) {
@@ -470,34 +472,37 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
     return nullptr;
   }
 
-  words.resize(wc);
-  wordXpos.resize(wc);
-  wordStyles.resize(wc);
-  bionicPrefixBytes.resize(wc);
-  wordSmallCaps.resize(wc);
-  wordUnderline.resize(wc);
-  wordVerticalAlign.resize(wc);
+  std::vector<std::string> words(wc);
   for (auto& w : words) serialization::readString(file, w);
-  for (auto& x : wordXpos) serialization::readPod(file, x);
-  for (auto& s : wordStyles) serialization::readPod(file, s);
+  std::vector<int16_t> wordXpos;
+  readPodArray(file, wordXpos, wc);
+  std::vector<EpdFontFamily::Style> wordStyles;
+  readPodArray(file, wordStyles, wc);
   if (std::all_of(wordStyles.begin(), wordStyles.end(),
                   [](EpdFontFamily::Style style) { return style == EpdFontFamily::REGULAR; })) {
     wordStyles.clear();
   }
-  for (auto& b : bionicPrefixBytes) serialization::readPod(file, b);
-  for (auto& f : wordSmallCaps) serialization::readPod(file, f);
-  for (auto& f : wordUnderline) serialization::readPod(file, f);
-  for (auto& f : wordVerticalAlign) serialization::readPod(file, f);
+  std::vector<uint8_t> bionicPrefixBytes;
+  readPodArray(file, bionicPrefixBytes, wc);
+  std::vector<uint8_t> wordSmallCaps;
+  readPodArray(file, wordSmallCaps, wc);
+  std::vector<uint8_t> wordUnderline;
+  readPodArray(file, wordUnderline, wc);
+  std::vector<uint8_t> wordVerticalAlign;
+  readPodArray(file, wordVerticalAlign, wc);
+
+  std::vector<std::string> wordImagePaths;
+  std::vector<uint16_t> wordImageW;
+  std::vector<uint16_t> wordImageH;
   uint8_t hasImages = 0;
   serialization::readPod(file, hasImages);
   if (hasImages) {
     wordImagePaths.resize(wc);
-    wordImageW.resize(wc);
-    wordImageH.resize(wc);
     for (auto& p : wordImagePaths) serialization::readString(file, p);
-    for (auto& v : wordImageW) serialization::readPod(file, v);
-    for (auto& v : wordImageH) serialization::readPod(file, v);
+    readPodArray(file, wordImageW, wc);
+    readPodArray(file, wordImageH, wc);
   }
+  Style style;
   serialization::readPod(file, style);
 
   return std::unique_ptr<TextBlock>(

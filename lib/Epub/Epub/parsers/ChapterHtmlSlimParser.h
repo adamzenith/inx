@@ -47,6 +47,9 @@ class ChapterHtmlSlimParser {
   GfxRenderer& renderer;
   std::function<void(std::unique_ptr<Page>)> completePageFn;
   std::function<void()> popupFn;
+  /** Optional cooperative-cancel hook polled once per expat input chunk; empty = never abort. */
+  std::function<bool()> shouldAbort_;
+  bool aborted_ = false;
 
   int depth = 0;
   int skipUntilDepth = INT_MAX;
@@ -433,4 +436,9 @@ class ChapterHtmlSlimParser {
    * When skipImageProcessing is true, only one pass runs and new ZIP→BMP work is skipped.
    */
   bool parseAndBuildPages(bool skipImageProcessing = false);
+
+  /** Installs a hook polled once per ~1 KB of HTML in every parse pass; returning true stops the build. */
+  void setShouldAbort(std::function<bool()> shouldAbort) { shouldAbort_ = std::move(shouldAbort); }
+  /** True when the last parseAndBuildPages() returned false because shouldAbort fired. */
+  bool wasAborted() const { return aborted_; }
 };

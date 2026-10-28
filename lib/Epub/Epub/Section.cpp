@@ -182,9 +182,8 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
     try {
       pageOffsets.resize(pageCount);
       file.seek(lutOffset);
-      for (uint16_t i = 0; i < pageCount; ++i) {
-        serialization::readPod(file, pageOffsets[i]);
-      }
+      // One bulk read for the whole LUT (same bytes as pageCount sequential readPod calls).
+      file.read(reinterpret_cast<uint8_t*>(pageOffsets.data()), sizeof(pageOffsets[0]) * pageCount);
     } catch (...) {
       pageOffsets.clear();
     }
@@ -333,7 +332,13 @@ bool Section::createSectionFile(const int fontId, const int headerFontId, const 
                                 const std::function<void()>& popupFn, bool skipImages,
                                 const std::function<void(Page&, uint16_t)>& pageBuiltFn,
                                 const bool warmImageDisplayCache, const ImageRenderMode warmImageRenderMode,
-                                const bool warmImageQuality, const int warmImageYOffset) {
+                                const bool warmImageQuality, const int warmImageYOffset,
+                                const std::function<bool()>& shouldAbort) {
+  aborted_ = false;
+  if (shouldAbort && shouldAbort()) {
+    aborted_ = true;
+    return false;
+  }
   const auto localPath = epub->getSpineItem(spineIndex).href;
   const auto tmpHtmlPath = epub->getCachePath() + "/.tmp_" + std::to_string(spineIndex) + ".html";
 
@@ -380,6 +385,11 @@ bool Section::createSectionFile(const int fontId, const int headerFontId, const 
         millis(), spineIndex, localPath.c_str(), epub->getPath().c_str(), epub->getTitle().c_str());
     return false;
   }
+  if (shouldAbort && shouldAbort()) {
+    SdMan.remove(tmpHtmlPath.c_str());
+    aborted_ = true;
+    return false;
+  }
 
   std::vector<uint32_t> lut;
 
@@ -393,6 +403,9 @@ bool Section::createSectionFile(const int fontId, const int headerFontId, const 
       warmImageDisplayCache, warmImageRenderMode, warmImageQuality, warmImageYOffset, popupFn);
 
   visitor.internalPath = localPath;
+  if (shouldAbort) {
+    visitor.setShouldAbort(shouldAbort);
+  }
 
   Hyphenator::setPreferredLanguage(epub->getLanguage());
 
@@ -419,6 +432,16 @@ bool Section::createSectionFile(const int fontId, const int headerFontId, const 
 
   epub->releaseParsedCssParser();
   SdMan.remove(tmpHtmlPath.c_str());
+
+  if (!success && visitor.wasAborted()) {
+    aborted_ = true;
+    Serial.printf("[%lu] [SCT] createSectionFile: aborted spine=%d pages-so-far=%u\n", millis(), spineIndex,
+                  static_cast<unsigned>(pageCount));
+    file.close();
+    SdMan.remove(filePath.c_str());
+    pageCount = 0;
+    return false;
+  }
 
   if (!success) {
     Serial.printf(

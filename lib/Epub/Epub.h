@@ -14,8 +14,15 @@
 #include "Epub/BookMetadataCache.h"
 #include "Epub/parsers/CssParser.h"
 
+struct ZipCentralDirIndex;
+
 class Epub {
  private:
+  /** Out-of-line deleter so this header doesn't need ZipFile.h (not on every includer's include path). */
+  struct ZipIndexDeleter {
+    void operator()(ZipCentralDirIndex* index) const;
+  };
+
   std::string tocNcxItem;
   std::string tocNavItem;
   std::string filepath;
@@ -24,6 +31,9 @@ class Epub {
   std::unique_ptr<BookMetadataCache> bookMetadataCache;
   mutable std::unique_ptr<CssParser> parsedCssParser_;
   mutable bool parsedCssLoaded_ = false;
+  /** Lazily built central-directory index so per-item zip lookups don't rescan the archive (8 B/entry). */
+  mutable std::unique_ptr<ZipCentralDirIndex, ZipIndexDeleter> zipIndex_;
+  ZipCentralDirIndex* zipIndex() const;
 
   bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata);

@@ -149,7 +149,16 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
 
   Serial.printf("[EBP] Zip Request: %s\n", path.c_str());
 
-  return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize);
+  return ZipFile(filepath, zipIndex()).readFileToStream(path.c_str(), out, chunkSize);
+}
+
+void Epub::ZipIndexDeleter::operator()(ZipCentralDirIndex* index) const { delete index; }
+
+ZipCentralDirIndex* Epub::zipIndex() const {
+  if (!zipIndex_) {
+    zipIndex_.reset(new (std::nothrow) ZipCentralDirIndex());
+  }
+  return zipIndex_.get();
 }
 
 /**
@@ -758,7 +767,7 @@ std::string Epub::getSmallThumbBmpPath() const { return cachePath + "/small_thum
  * @return true if the size was successfully retrieved, false otherwise
  */
 bool Epub::getItemSize(const std::string& href, size_t* size) const {
-  return ZipFile(filepath).getInflatedFileSize(FsHelpers::normalisePath(href).c_str(), size);
+  return ZipFile(filepath, zipIndex()).getInflatedFileSize(FsHelpers::normalisePath(href).c_str(), size);
 }
 
 /**

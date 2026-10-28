@@ -618,6 +618,12 @@ bool ChapterHtmlSlimParser::parseHtmlThroughExpat(const bool callProgressPopup) 
   uint32_t bytesReadTotal = 0;
   int done = 0;
   do {
+    if (shouldAbort_ && shouldAbort_()) {
+      parseOk = false;
+      failReason = "aborted";
+      aborted_ = true;
+      break;
+    }
     void* const buf = XML_GetBuffer(parser, 1024);
     if (!buf) {
       parseOk = false;
@@ -2777,6 +2783,7 @@ void ChapterHtmlSlimParser::addImageToPage(const std::string& bmpPath, int imgW,
  * @return true if parsing was successful, false otherwise
  */
 bool ChapterHtmlSlimParser::parseAndBuildPages(bool skipImageProcessing) {
+  aborted_ = false;
   skipImages = skipImageProcessing;
   imageExtractCountForYield_ = 0;
   cssUsageFilter_ = CssParser::UsageFilter();

@@ -89,6 +89,128 @@ bool ZipFile::loadAllFileStatSlims() {
   return true;
 }
 
+namespace {
+
+constexpr uint32_t kCentralDirSig = 0x02014b50;
+constexpr size_t kCentralDirHeaderSize = 46;
+
+inline uint16_t readLe16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
+inline uint32_t readLe32(const uint8_t* p) {
+  return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) | (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
+}
+
+}  // namespace
+
+/**
+ * Builds the caller-owned CentralDirIndex with one buffered pass over the central directory. Mirrors the
+ * linear scan's rules exactly (stop at the first non-central-directory signature; entries with names of 256+
+ * bytes can never match) so lookups through the index return what the scan would.
+ */
+bool ZipFile::ensureIndex() {
+  if (!index) return false;
+  if (index->built) return true;
+  if (index->unavailable) return false;
+
+  const uint16_t capacity = zipDetails.totalEntries;
+  if (capacity == 0 || capacity > CentralDirIndex::kMaxEntries) {
+    index->unavailable = true;
+    return false;
+  }
+
+  constexpr size_t kBufSize = 1024;
+  auto* entries = static_cast<CentralDirIndex::Entry*>(malloc(sizeof(CentralDirIndex::Entry) * capacity));
+  auto* buf = static_cast<uint8_t*>(malloc(kBufSize));
+  if (!entries || !buf) {
+    free(entries);
+    free(buf);
+    // Transient low-heap: leave the index unbuilt so a later lookup can retry; fall back to the scan now.
+    return false;
+  }
+
+  const uint32_t fileSize = static_cast<uint32_t>(file.size());
+  uint32_t bufStart = 0;
+  size_t bufLen = 0;
+  // Makes [pos, pos + need) resident in buf; false when the file ends first.
+  auto ensure = [&](const uint32_t pos, const size_t need) -> bool {
+    if (pos >= bufStart && pos + need <= bufStart + bufLen) return true;
+    if (pos >= fileSize) return false;
+    const size_t want = std::min<size_t>(kBufSize, fileSize - pos);
+    if (want < need) return false;
+    file.seek(pos);
+    const size_t got = file.read(buf, want);
+    bufStart = pos;
+    bufLen = got;
+    return got >= need;
+  };
+
+  uint16_t count = 0;
+  bool overflow = false;
+  uint32_t pos = zipDetails.centralDirOffset;
+  while (ensure(pos, kCentralDirHeaderSize)) {
+    const uint8_t* h = buf + (pos - bufStart);
+    if (readLe32(h) != kCentralDirSig) break;
+    const uint16_t nameLen = readLe16(h + 28);
+    const uint16_t m = readLe16(h + 30);
+    const uint16_t k = readLe16(h + 32);
+    if (nameLen < 256) {
+      if (!ensure(pos, kCentralDirHeaderSize + nameLen)) break;
+      if (count >= capacity) {
+        overflow = true;
+        break;
+      }
+      const char* name = reinterpret_cast<const char*>(buf + (pos - bufStart) + kCentralDirHeaderSize);
+      entries[count++] = {fnvHash32(name, nameLen), pos};
+    }
+    pos += kCentralDirHeaderSize + nameLen + m + k;
+  }
+  free(buf);
+
+  if (overflow) {
+    // EOCD entry count disagrees with the directory: don't trust the index, keep using the scan.
+    free(entries);
+    index->unavailable = true;
+    return false;
+  }
+
+  // Ties (same hash) stay in central-directory order so the first matching record wins, like the scan.
+  std::sort(entries, entries + count, [](const CentralDirIndex::Entry& a, const CentralDirIndex::Entry& b) {
+    return a.nameHash < b.nameHash || (a.nameHash == b.nameHash && a.cdEntryOffset < b.cdEntryOffset);
+  });
+  free(index->entries);
+  index->entries = entries;
+  index->count = count;
+  index->built = true;
+  return true;
+}
+
+bool ZipFile::lookupInIndex(const char* filename, FileStatSlim* fileStat) {
+  const size_t nameLen = strlen(filename);
+  if (nameLen >= 256) return false;
+  const uint32_t hash = fnvHash32(filename, nameLen);
+  const auto* begin = index->entries;
+  const auto* end = index->entries + index->count;
+  const auto* it = std::lower_bound(begin, end, hash, [](const CentralDirIndex::Entry& e, const uint32_t h) {
+    return e.nameHash < h;
+  });
+  uint8_t rec[kCentralDirHeaderSize + 256];
+  for (; it != end && it->nameHash == hash; ++it) {
+    file.seek(it->cdEntryOffset);
+    const size_t want = kCentralDirHeaderSize + nameLen;
+    if (file.read(rec, want) != want) continue;
+    if (readLe32(rec) != kCentralDirSig || readLe16(rec + 28) != nameLen ||
+        memcmp(rec + kCentralDirHeaderSize, filename, nameLen) != 0) {
+      continue;
+    }
+    fileStat->method = readLe16(rec + 10);
+    fileStat->compressedSize = readLe32(rec + 20);
+    fileStat->uncompressedSize = readLe32(rec + 24);
+    fileStat->localHeaderOffset = readLe32(rec + 42);
+    return true;
+  }
+  return false;
+}
+
 bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
   if (!fileStatSlimCache.empty()) {
     const auto it = fileStatSlimCache.find(filename);
@@ -109,6 +231,14 @@ bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
       close();
     }
     return false;
+  }
+
+  if (ensureIndex()) {
+    const bool found = lookupInIndex(filename, fileStat);
+    if (!wasOpen) {
+      close();
+    }
+    return found;
   }
 
   uint32_t startPos = lastCentralDirPosValid ? lastCentralDirPos : zipDetails.centralDirOffset;
@@ -208,6 +338,10 @@ bool ZipFile::loadZipDetails() {
   if (zipDetails.isSet) {
     return true;
   }
+  if (index && index->details.isSet) {
+    zipDetails = index->details;
+    return true;
+  }
 
   const bool wasOpen = isOpen();
   if (!wasOpen && !open()) {
@@ -239,7 +373,9 @@ bool ZipFile::loadZipDetails() {
   int foundOffset = -1;
   for (int i = scanRange - 22; i >= 0; i--) {
     constexpr uint32_t signature = 0x06054b50;
-    if (*reinterpret_cast<uint32_t*>(&buffer[i]) == signature) {
+    uint32_t word;
+    memcpy(&word, &buffer[i], sizeof(word));  // buffer offsets are unaligned
+    if (word == signature) {
       foundOffset = i;
       break;
     }
@@ -254,9 +390,12 @@ bool ZipFile::loadZipDetails() {
     return false;
   }
 
-  zipDetails.totalEntries = *reinterpret_cast<uint16_t*>(&buffer[foundOffset + 10]);
-  zipDetails.centralDirOffset = *reinterpret_cast<uint32_t*>(&buffer[foundOffset + 16]);
+  memcpy(&zipDetails.totalEntries, &buffer[foundOffset + 10], sizeof(uint16_t));
+  memcpy(&zipDetails.centralDirOffset, &buffer[foundOffset + 16], sizeof(uint32_t));
   zipDetails.isSet = true;
+  if (index) {
+    index->details = zipDetails;
+  }
 
   free(buffer);
   if (!wasOpen) {

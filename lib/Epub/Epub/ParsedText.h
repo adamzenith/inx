@@ -9,7 +9,6 @@
 
 #include <cstdint>
 #include <functional>
-#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -19,23 +18,23 @@
 class GfxRenderer;
 
 class ParsedText {
-  std::list<std::string> words;
-  std::list<EpdFontFamily::Style> wordStyles;
-  std::list<uint8_t> bionicPrefixBytes;
-  std::list<uint8_t> wordSmallCaps;
-  std::list<uint8_t> wordUnderline;
-  std::list<uint8_t> wordVerticalAlign;
-  std::list<int16_t> wordXOffset;
+  std::vector<std::string> words;
+  std::vector<EpdFontFamily::Style> wordStyles;
+  std::vector<uint8_t> bionicPrefixBytes;
+  std::vector<uint8_t> wordSmallCaps;
+  std::vector<uint8_t> wordUnderline;
+  std::vector<uint8_t> wordVerticalAlign;
+  std::vector<int16_t> wordXOffset;
   bool hasWordXOffsets_ = false;
   /** True when this token was split only by an inline style boundary and should not get an inter-word gap. */
-  std::list<uint8_t> wordJoinPrevious;
+  std::vector<uint8_t> wordJoinPrevious;
   bool hasJoinedWords_ = false;
   // Inline images flow as atomic "words": for an image slot the `words` entry is empty and these hold the
   // cached path + on-line display size. These lists stay EMPTY (zero overhead) until the block actually
   // contains an inline image — see hasInlineImages_ — so plain text blocks pay nothing.
-  std::list<std::string> wordImagePaths;
-  std::list<uint16_t> wordImageW;
-  std::list<uint16_t> wordImageH;
+  std::vector<std::string> wordImagePaths;
+  std::vector<uint16_t> wordImageW;
+  std::vector<uint16_t> wordImageH;
   bool hasInlineImages_ = false;
   /** Widest natural (pre-alignment) line content width seen during layout; used to size CSS border rules. */
   uint16_t maxLineContentWidth_ = 0;
