@@ -6,6 +6,8 @@
 #include <string>
 
 class GfxRenderer;
+class ExternalFont;
+struct TextGlyphTarget;
 
 class TextRender {
  public:
@@ -26,8 +28,10 @@ class TextRender {
                        EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   void rotated90CW(int fontId, int x, int y, const char* text, bool black = true,
                    EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
-  void render(int fontId, int x, int y, const char* text, bool black = true,
-              EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+  /** Draws text with its top at y. Returns the text width exactly as getWidth() would measure it, from the same
+   *  glyph walk, so callers that need the width (e.g. underline/bionic layout) don't re-measure. */
+  int render(int fontId, int x, int y, const char* text, bool black = true,
+             EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   int getScaledWidth(int fontId, const char* text, uint8_t scalePct,
                      EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   int renderScaled(int fontId, int x, int y, const char* text, uint8_t scalePct, bool black = true,
@@ -40,10 +44,13 @@ class TextRender {
                 EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
 
  private:
-  void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, const int* y, bool pixelState,
-                  EpdFontFamily::Style style) const;
-  void renderScaledChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, const int* y, bool pixelState,
-                        EpdFontFamily::Style style, uint8_t scalePct) const;
+  struct WidthBounds;
+  void renderChar(const EpdFontFamily& fontFamily, const EpdFontData* fontData, ExternalFont* stream, uint32_t cp,
+                  int* x, int y, EpdFontFamily::Style style, const TextGlyphTarget& target,
+                  WidthBounds* bounds) const;
+  void renderScaledChar(const EpdFontFamily& fontFamily, const EpdFontData* fontData, ExternalFont* stream,
+                        uint32_t cp, int* x, int y, EpdFontFamily::Style style, uint8_t scalePct,
+                        const TextGlyphTarget& target) const;
   int getStreamingTextWidth(const EpdFontFamily& family, const char* text, EpdFontFamily::Style style) const;
   GfxRenderer& gfx;
 };

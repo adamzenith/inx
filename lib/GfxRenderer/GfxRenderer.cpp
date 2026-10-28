@@ -93,6 +93,49 @@ __attribute__((optimize("O2"))) void GfxRenderer::rotateCoordinates(const int x,
   }
 }
 
+// Must stay in lockstep with rotateCoordinates() above.
+GfxRenderer::PanelMapping GfxRenderer::getPanelMapping() const {
+  PanelMapping m{};
+  m.widthBytes = panelWidthBytes;
+  m.screenWidth = getScreenWidth();
+  m.screenHeight = getScreenHeight();
+  switch (orientation) {
+    case Portrait:  // (y, H-1-x)
+      m.originX = 0;
+      m.originY = panelHeight - 1;
+      m.xStepX = 0;
+      m.xStepY = -1;
+      m.yStepX = 1;
+      m.yStepY = 0;
+      break;
+    case LandscapeClockwise:  // (W-1-x, H-1-y)
+      m.originX = panelWidth - 1;
+      m.originY = panelHeight - 1;
+      m.xStepX = -1;
+      m.xStepY = 0;
+      m.yStepX = 0;
+      m.yStepY = -1;
+      break;
+    case PortraitInverted:  // (W-1-y, x)
+      m.originX = panelWidth - 1;
+      m.originY = 0;
+      m.xStepX = 0;
+      m.xStepY = 1;
+      m.yStepX = -1;
+      m.yStepY = 0;
+      break;
+    case LandscapeCounterClockwise:  // (x, y)
+      m.originX = 0;
+      m.originY = 0;
+      m.xStepX = 1;
+      m.xStepY = 0;
+      m.yStepX = 0;
+      m.yStepY = 1;
+      break;
+  }
+  return m;
+}
+
 __attribute__((optimize("O2"))) void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
   uint8_t* frameBuffer = display.getFrameBuffer();
 

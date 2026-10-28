@@ -58,8 +58,8 @@ int renderWordSegment(const GfxRenderer& renderer, const int fontId, const int x
   if (smallCaps) {
     return renderSmallCapsSegment(renderer, fontId, x, y, text, style, black);
   }
-  renderer.text.render(fontId, x, y, text.c_str(), black, style);
-  return x + renderer.text.getWidth(fontId, text.c_str(), style);
+  // render() returns the same width getWidth() would measure, from its own glyph walk.
+  return x + renderer.text.render(fontId, x, y, text.c_str(), black, style);
 }
 
 int measureWordSegment(const GfxRenderer& renderer, const int fontId, const std::string& text,

@@ -101,6 +101,21 @@ class GfxRenderer {
                  ImageOrientation imgOrientation = None) const;
 
   /** Pixels outside the rounded clip after `Bitmap.Draw` (same geometry as rounded `fillRect`). */
+  /**
+   * Logical->panel coordinate mapping for the current orientation, identical to the one drawPixel() applies:
+   *   panelX = originX + x * xStepX + y * yStepX,  panelY = originY + x * xStepY + y * yStepY.
+   * A logical (x, y) lands on the panel iff 0 <= x < screenWidth && 0 <= y < screenHeight. Lets per-pixel
+   * loops (glyph blits) resolve rotation and clipping once per primitive instead of once per pixel.
+   */
+  struct PanelMapping {
+    int originX, originY;
+    int xStepX, xStepY;  // panel delta for logical x + 1
+    int yStepX, yStepY;  // panel delta for logical y + 1
+    int screenWidth, screenHeight;
+    int widthBytes;
+  };
+  PanelMapping getPanelMapping() const;
+
   enum class BitmapRoundedCornerOutside : uint8_t {
     None = 0,
     PaperOutside = 1,
