@@ -355,6 +355,7 @@ void EInkDisplay::waitForRefresh(const char* comment) {
   unsigned long start = millis();
   if (!_x3Mode) {
     while (digitalRead(_busy) == HIGH) {
+      if (busyHook) busyHook();
       delay(1);
       if (millis() - start > 30000) break;
     }
@@ -367,6 +368,7 @@ void EInkDisplay::waitForRefresh(const char* comment) {
     if (digitalRead(_busy) == LOW) {
       sawLow = true;
       while (digitalRead(_busy) == LOW) {
+        if (busyHook) busyHook();
         delay(1);
         if (millis() - start > 30000) break;
       }
@@ -407,6 +409,7 @@ void EInkDisplay::waitWhileBusy(const char* comment) {
   unsigned long start = millis();
   if (!_x3Mode) {
     while (digitalRead(_busy) == HIGH) {
+      if (busyHook) busyHook();
       delay(1);
       if (millis() - start > 30000) break;
     }
@@ -419,6 +422,7 @@ void EInkDisplay::waitWhileBusy(const char* comment) {
     if (digitalRead(_busy) == LOW) {
       sawLow = true;
       while (digitalRead(_busy) == LOW) {
+        if (busyHook) busyHook();
         delay(1);
         if (millis() - start > 30000) break;
       }

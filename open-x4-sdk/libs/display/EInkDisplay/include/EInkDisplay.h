@@ -90,7 +90,16 @@ class EInkDisplay {
   // Save the current framebuffer to a PBM file (desktop/test builds only)
   void saveFrameBufferAsPBM(const char* filename);
 
+  /**
+   * Called repeatedly (about every millisecond) while the controller is busy refreshing. The panel needs no
+   * SPI traffic then, so the hook may use other SPI devices (the SD card) but must not touch the display or
+   * its frame buffer. nullptr disables it.
+   */
+  using BusyHook = void (*)();
+  void setBusyHook(BusyHook hook) { busyHook = hook; }
+
  private:
+  BusyHook busyHook = nullptr;
   // Internal geometry setter used by setDisplayX3().
   void setDisplayDimensions(uint16_t width, uint16_t height);
 

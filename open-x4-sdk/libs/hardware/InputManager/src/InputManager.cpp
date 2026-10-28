@@ -63,12 +63,11 @@ void InputManager::injectOneShotPress(const uint8_t buttonIndex) {
   }
 }
 
-void InputManager::update() {
-  const unsigned long currentTime = millis();
+void InputManager::sample(const unsigned long currentTime, uint8_t& outPressed, uint8_t& outReleased) {
   const uint8_t state = getState();
 
-  pressedEvents = 0;
-  releasedEvents = 0;
+  outPressed = 0;
+  outReleased = 0;
 
   if (state != lastState) {
     lastDebounceTime = currentTime;
@@ -77,19 +76,38 @@ void InputManager::update() {
 
   if ((currentTime - lastDebounceTime) > DEBOUNCE_DELAY) {
     if (state != currentState) {
-      pressedEvents = state & ~currentState;
-      releasedEvents = currentState & ~state;
+      outPressed = state & ~currentState;
+      outReleased = currentState & ~state;
 
-      if (pressedEvents > 0 && currentState == 0) {
+      if (outPressed > 0 && currentState == 0) {
         buttonPressStart = currentTime;
       }
 
-      if (releasedEvents > 0 && state == 0) {
+      if (outReleased > 0 && state == 0) {
         buttonPressFinish = currentTime;
       }
 
       currentState = state;
     }
+  }
+}
+
+void InputManager::poll() {
+  uint8_t pressed = 0;
+  uint8_t released = 0;
+  sample(millis(), pressed, released);
+  latchedPressed |= pressed;
+  latchedReleased |= released;
+}
+
+void InputManager::update() {
+  sample(millis(), pressedEvents, releasedEvents);
+
+  if (latchedPressed != 0 || latchedReleased != 0) {
+    pressedEvents |= latchedPressed;
+    releasedEvents |= latchedReleased;
+    latchedPressed = 0;
+    latchedReleased = 0;
   }
 
   if (pendingInjectPress != 0) {

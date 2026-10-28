@@ -84,16 +84,29 @@ class InputManager {
 
   bool isPowerButtonPressed() const;
 
+  /**
+   * Samples the buttons without consuming events: any press/release seen here is latched and reported by
+   * the next #update(). Lets a long blocking operation (e.g. an e-ink refresh) keep watching the buttons so
+   * a tap that starts and ends inside it isn't lost.
+   */
+  void poll();
+
+  /** True if a button is down, or a press/release latched by #poll() is waiting for the next #update(). */
+  bool hasPendingActivity() const { return currentState != 0 || latchedPressed != 0 || latchedReleased != 0; }
+
   static const char* getButtonName(uint8_t buttonIndex);
 
  private:
   int getButtonFromADC(int adcValue, const int ranges[], int numButtons);
+  void sample(unsigned long currentTime, uint8_t& outPressed, uint8_t& outReleased);
 
   uint8_t currentState;
   uint8_t lastState;
   uint8_t pressedEvents;
   uint8_t releasedEvents;
   uint8_t pendingInjectPress{0};
+  uint8_t latchedPressed{0};
+  uint8_t latchedReleased{0};
   unsigned long lastDebounceTime;
   unsigned long buttonPressStart;
   unsigned long buttonPressFinish;

@@ -42,6 +42,7 @@ class GfxRenderer {
   uint16_t panelWidthBytes = HalDisplay::DISPLAY_WIDTH_BYTES;
   uint32_t frameBufferSize = HalDisplay::BUFFER_SIZE;
   std::vector<uint8_t*> bwBufferChunks;
+  std::function<void()> refreshJob;
   struct FontSlot {
     int id;
     EpdFontFamily family;
@@ -85,6 +86,14 @@ class GfxRenderer {
   int getScreenWidth() const;
   int getScreenHeight() const;
   void displayBuffer(const HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
+  /**
+   * Work to run while the next display refresh is in progress, so it overlaps the panel's busy time instead of
+   * adding to it. It must not draw or touch the frame buffer. On hardware the main loop's display busy hook
+   * runs it; runRefreshJob() runs it directly (the caller's fallback, and the only path in the simulator).
+   */
+  void setRefreshJob(std::function<void()> job) { refreshJob = std::move(job); }
+  void runRefreshJob();
+  void clearRefreshJob() { refreshJob = nullptr; }
   void invertScreen() const;
   void clearScreen(uint8_t color = 0xFF) const;
   void begin();
@@ -92,15 +101,6 @@ class GfxRenderer {
   /** Solid ink/paper, or Gray (50% checkerboard dither in BW, similar to light fills in list UIs). */
   enum class FillTone : uint8_t { Paper, Ink, Gray };
 
-  void drawPixel(int x, int y, bool state = true) const;
-  bool readPixel(int x, int y) const;
-  bool readPackedRow1bpp(int x, int y, int width, uint8_t* outRow) const;
-  void drawPackedRow1bpp(int x, int y, int width, const uint8_t* row) const;
-
-  void drawImage(const uint8_t bitmap[], int x, int y, int width, int height,
-                 ImageOrientation imgOrientation = None) const;
-
-  /** Pixels outside the rounded clip after `Bitmap.Draw` (same geometry as rounded `fillRect`). */
   /**
    * Logical->panel coordinate mapping for the current orientation, identical to the one drawPixel() applies:
    *   panelX = originX + x * xStepX + y * yStepX,  panelY = originY + x * xStepY + y * yStepY.
@@ -116,6 +116,15 @@ class GfxRenderer {
   };
   PanelMapping getPanelMapping() const;
 
+  void drawPixel(int x, int y, bool state = true) const;
+  bool readPixel(int x, int y) const;
+  bool readPackedRow1bpp(int x, int y, int width, uint8_t* outRow) const;
+  void drawPackedRow1bpp(int x, int y, int width, const uint8_t* row) const;
+
+  void drawImage(const uint8_t bitmap[], int x, int y, int width, int height,
+                 ImageOrientation imgOrientation = None) const;
+
+  /** Pixels outside the rounded clip after `Bitmap.Draw` (same geometry as rounded `fillRect`). */
   enum class BitmapRoundedCornerOutside : uint8_t {
     None = 0,
     PaperOutside = 1,

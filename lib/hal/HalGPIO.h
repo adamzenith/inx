@@ -84,6 +84,10 @@ class HalGPIO {
   void begin();
 
   void update();
+  /** Samples buttons without consuming events; presses/releases are reported by the next update(). */
+  void pollInput() { inputMgr.poll(); }
+  /** See InputManager::hasPendingActivity(). */
+  bool hasPendingInput() const { return inputMgr.hasPendingActivity(); }
   void injectOneShotPress(uint8_t buttonIndex) {
 #if CROSSPOINT_EMULATED == 0
     inputMgr.injectOneShotPress(buttonIndex);

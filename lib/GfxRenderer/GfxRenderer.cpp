@@ -251,6 +251,14 @@ void GfxRenderer::invertScreen() const {
 
 void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const { display.displayBuffer(refreshMode); }
 
+void GfxRenderer::runRefreshJob() {
+  if (!refreshJob) return;
+  // Move it out first: the job runs once even if it triggers another busy-wait.
+  auto job = std::move(refreshJob);
+  refreshJob = nullptr;
+  job();
+}
+
 bool GfxRenderer::deviceIsX3() const {
 #ifdef SIMULATOR
   return gpio.deviceIsX3();

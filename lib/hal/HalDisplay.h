@@ -32,6 +32,9 @@ class HalDisplay {
 
   void deepSleep();
 
+  /** See EInkDisplay::setBusyHook. */
+  void setBusyHook(EInkDisplay::BusyHook hook) { einkDisplay.setBusyHook(hook); }
+
   uint8_t* getFrameBuffer() const;
 
   void copyGrayscaleBuffers(const uint8_t* lsbBuffer, const uint8_t* msbBuffer);

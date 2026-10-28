@@ -246,9 +246,35 @@ void enterDeepSleep() {
   gpio.startDeepSleep();
 }
 
+#ifndef SIMULATOR
+TaskHandle_t mainLoopTask = nullptr;
+
+/**
+ * @brief Runs while the e-ink controller is busy refreshing (hundreds of ms per update)
+ *
+ * Keeps sampling the buttons so a tap made during a refresh is reported afterwards instead of lost, and runs the
+ * renderer's queued refresh job (e.g. the reader prefetching its next page). Only on the main loop task: other
+ * tasks that refresh the display must not race the loop's own input handling.
+ */
+void onDisplayBusy() {
+  if (xTaskGetCurrentTaskHandle() != mainLoopTask) return;
+  static unsigned long lastPoll = 0;
+  const unsigned long now = millis();
+  if (now - lastPoll >= 4) {
+    lastPoll = now;
+    gpio.pollInput();
+  }
+  renderer.runRefreshJob();
+}
+#endif
+
 void setupDisplayAndFonts() {
   display.begin();
   render.begin();
+#ifndef SIMULATOR
+  mainLoopTask = xTaskGetCurrentTaskHandle();
+  display.setBusyHook(onDisplayBusy);
+#endif
   FontManager::initialize(render);
 }
 
