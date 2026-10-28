@@ -191,7 +191,7 @@ void XtcReaderActivity::onEnter() {
 
   updateRequired = true;
 
-  xTaskCreate(&XtcReaderActivity::taskTrampoline, "XtcReaderActivityTask", 4096, this, 1, &displayTaskHandle);
+  xTaskCreate(&XtcReaderActivity::taskTrampoline, "XtcReaderActivityTask", 5120, this, 1, &displayTaskHandle);
 }
 
 void XtcReaderActivity::onExit() {

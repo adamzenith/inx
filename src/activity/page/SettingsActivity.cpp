@@ -336,7 +336,7 @@ void SettingsActivity::startLibraryIndexing() {
         activity->updateRequired = true;
         vTaskDelete(nullptr);
       },
-      "LibraryIndexTask", 4096, this, 1, nullptr);
+      "LibraryIndexTask", 5120, this, 1, nullptr);
 }
 
 /**

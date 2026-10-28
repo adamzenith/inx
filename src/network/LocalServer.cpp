@@ -1246,7 +1246,7 @@ void LocalServer::handleLibraryIndexRefresh() const {
   webLibraryIndexTotal = 0;
   webLibraryIndexPath[0] = '\0';
 
-  BaseType_t created = xTaskCreate(webLibraryIndexTask, "WebLibIndex", 4096, nullptr, 1, nullptr);
+  BaseType_t created = xTaskCreate(webLibraryIndexTask, "WebLibIndex", 5120, nullptr, 1, nullptr);
   if (created != pdPASS) {
     webLibraryIndexing = false;
     server->send(500, "application/json", "{\"ok\":false,\"error\":\"task\"}");
