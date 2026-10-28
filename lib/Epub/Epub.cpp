@@ -635,7 +635,7 @@ bool Epub::load(const bool buildIfMissing) {
   bookMetadataCache->endTocPass();
 
   bookMetadataCache->endWrite();
-  bookMetadataCache->buildBookBin(filepath, meta);
+  bookMetadataCache->buildBookBin(filepath, meta, zipIndex());
   bookMetadataCache->cleanupTmpFiles();
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
   return bookMetadataCache->load();

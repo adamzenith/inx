@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+struct ZipCentralDirIndex;
+
 class BookMetadataCache {
  public:
   struct BookMetadata {
@@ -72,6 +74,10 @@ class BookMetadataCache {
   FsFile bookFile;
 
   FsFile spineFile;
+  // Where the last TOC entry's spine lookup matched (index and its offset in spineFile), so the next lookup
+  // starts there: TOC entries mostly follow spine order, and runs of them share one chapter's href.
+  int tocSearchSpineIndex = 0;
+  uint32_t tocSearchSpinePos = 0;
   FsFile tocFile;
   FsFile cssFile;
 
@@ -125,7 +131,9 @@ class BookMetadataCache {
   bool endWrite();
   bool cleanupTmpFiles() const;
 
-  bool buildBookBin(const std::string& epubPath, const BookMetadata& metadata);
+  /** zipIndex, when given, is the book's central-directory index, so each spine item's size is a lookup
+   * rather than a scan of the zip's central directory. */
+  bool buildBookBin(const std::string& epubPath, const BookMetadata& metadata, ZipCentralDirIndex* zipIndex = nullptr);
 
   bool load();
   SpineEntry getSpineEntry(int index);

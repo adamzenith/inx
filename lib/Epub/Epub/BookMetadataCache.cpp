@@ -51,6 +51,8 @@ bool BookMetadataCache::beginTocPass() {
   if (!SdMan.openFileForRead("BMC", cachePath + tmpSpineBinFile, spineFile)) {
     return false;
   }
+  tocSearchSpineIndex = 0;
+  tocSearchSpinePos = 0;
   if (!SdMan.openFileForWrite("BMC", cachePath + tmpTocBinFile, tocFile)) {
     spineFile.close();
     return false;
@@ -113,7 +115,8 @@ bool BookMetadataCache::endWrite() {
   return true;
 }
 
-bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMetadata& metadata) {
+bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMetadata& metadata,
+                                     ZipCentralDirIndex* zipIndex) {
   if (!SdMan.openFileForWrite("BMC", cachePath + bookBinFile, bookFile)) {
     return false;
   }
@@ -204,7 +207,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     }
   }
 
-  ZipFile zip(epubPath);
+  ZipFile zip(epubPath, zipIndex);
 
   if (!zip.open()) {
     Serial.printf("[%lu] [BMC] Could not open EPUB zip for size calculations\n", millis());
@@ -327,12 +330,22 @@ void BookMetadataCache::createTocEntry(const std::string& title, const std::stri
 
   int16_t spineIndex = -1;
 
-  spineFile.seek(0);
-  for (int i = 0; i < spineCount; i++) {
+  // Search from the spine item the previous entry matched and wrap around. Rescanning from the start for
+  // every entry read O(toc x spine) entries from the card on large books.
+  int i = tocSearchSpineIndex < spineCount ? tocSearchSpineIndex : 0;
+  spineFile.seek(i == tocSearchSpineIndex ? tocSearchSpinePos : 0);
+  for (int n = 0; n < spineCount; n++) {
+    const uint32_t entryPos = static_cast<uint32_t>(spineFile.position());
     auto spineEntry = readSpineEntry(spineFile);
     if (spineEntry.href == href) {
       spineIndex = static_cast<int16_t>(i);
+      tocSearchSpineIndex = i;
+      tocSearchSpinePos = entryPos;
       break;
+    }
+    if (++i == spineCount) {
+      i = 0;
+      spineFile.seek(0);
     }
   }
   if (spineIndex == -1) {
