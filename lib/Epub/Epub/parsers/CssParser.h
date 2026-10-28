@@ -84,8 +84,10 @@ class CssParser {
                       const std::string& styleAttr) const;
   bool isDisplayInlineBlock(const std::string& elementTagLower, const std::string& className, const std::string& id,
                             const std::string& styleAttr) const;
+  /** True if `display: none` applies. With ignoreContextual, a combinator selector the matcher cannot verify
+   * (".toc li") does not count, so an over-broad match cannot hide real text. */
   bool isDisplayNone(const std::string& elementTagLower, const std::string& className, const std::string& id,
-                     const std::string& styleAttr) const;
+                     const std::string& styleAttr, bool ignoreContextual = false) const;
   bool isFloatLeft(const std::string& elementTagLower, const std::string& className, const std::string& id,
                    const std::string& styleAttr) const;
 

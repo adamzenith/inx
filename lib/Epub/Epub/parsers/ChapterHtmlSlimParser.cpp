@@ -435,6 +435,16 @@ constexpr int NUM_IMAGE_TAGS = sizeof(IMAGE_TAGS) / sizeof(IMAGE_TAGS[0]);
 const char* SKIP_TAGS[] = {"head"};
 constexpr int NUM_SKIP_TAGS = sizeof(SKIP_TAGS) / sizeof(SKIP_TAGS[0]);
 
+static const char* getAttribute(const XML_Char** atts, const char* attrName) {
+  if (!atts) return nullptr;
+  for (int i = 0; atts[i]; i += 2) {
+    if (strcmp(atts[i], attrName) == 0) return atts[i + 1];
+  }
+  return nullptr;
+}
+
+static bool hasHiddenAttribute(const XML_Char** atts) { return getAttribute(atts, "hidden") != nullptr; }
+
 /**
  * Determines if a character is whitespace.
  *
@@ -540,8 +550,8 @@ void ChapterHtmlSlimParser::resetStructuralStateForParsePass() {
   cssAlignmentExplicitStack.clear();
   cssAlignmentDepths.clear();
   cssDisplayBlockDepths.clear();
-  ulBulletVisibleStack.clear();
-  ulBulletVisibleDepths.clear();
+  listScopes_.clear();
+  listItemIndents_.clear();
   pendingListMarker_ = false;
   cssFontStyleStack.clear();
   smallCapsStack.clear();
@@ -1744,6 +1754,21 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     return;
   }
 
+  // Inside skipped content nothing is laid out or pushed, so endElement() has nothing to unwind either.
+  if (self->skipUntilDepth < self->depth) {
+    self->depth += 1;
+    return;
+  }
+  // The HTML hidden attribute and CSS display:none hide the whole subtree (nav landmarks, page lists,
+  // print-only notes).
+  if (strcmp(name, "body") != 0 && strcmp(name, "html") != 0 &&
+      (hasHiddenAttribute(atts) ||
+       (hasSelectorAttrs && self->css().isDisplayNone(tagLower, classAttr, idAttr, styleAttr, true)))) {
+    self->skipUntilDepth = self->depth;
+    self->depth += 1;
+    return;
+  }
+
   if (self->handleTableStartElement(name, atts, tagLower, classAttr, idAttr, styleAttr)) {
     return;
   }
@@ -1882,6 +1907,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
           self->currentPageNextY = 0;
         }
       }
+      // "text<p>more" or "<li>Item<ul>": the word before the tag belongs to the block it was typed in.
+      self->flushPartWordBuffer();
       const TextBlock::Style blockStyle =
           self->resolveBlockStyle(name, atts, elementHasExplicitTextAlign, elementCssStyle, inheritedCssStyle);
       self->startNewTextBlock(blockStyle);
@@ -1907,19 +1934,37 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       if (tagLower == "ul" || tagLower == "ol") {
         self->listNoIndentDepths_.push_back(self->depth);
       }
-      if (tagLower == "ul") {
-        self->ulBulletVisibleStack.push_back(!self->css().isListStyleNone(tagLower, classAttr, idAttr, styleAttr));
-        self->ulBulletVisibleDepths.push_back(self->depth);
+      if (tagLower == "ul" || tagLower == "ol") {
+        ListScope scope;
+        scope.depth = self->depth;
+        scope.markerVisible = !self->css().isListStyleNone(tagLower, classAttr, idAttr, styleAttr);
+        scope.ordered = tagLower == "ol";
+        if (scope.ordered) {
+          const char* start = getAttribute(atts, "start");
+          if (start && *start) scope.nextNumber = atoi(start);
+        }
+        self->listScopes_.push_back(scope);
       } else if (tagLower == "li") {
-        bool showBullet = !self->ulBulletVisibleStack.empty() && self->ulBulletVisibleStack.back();
+        ListScope* list = self->listScopes_.empty() ? nullptr : &self->listScopes_.back();
+        bool showBullet = list && list->markerVisible;
         if (self->css().hasListStyleSpecified(tagLower, classAttr, idAttr, styleAttr)) {
           showBullet = !self->css().isListStyleNone(tagLower, classAttr, idAttr, styleAttr);
+        }
+        const bool ordered = list && list->ordered;
+        if (ordered) {
+          const char* value = getAttribute(atts, "value");
+          if (value && *value) list->nextNumber = atoi(value);
+          self->pendingListMarkerText_ = std::to_string(list->nextNumber) + ".";
+          list->nextNumber++;
+        } else {
+          self->pendingListMarkerText_ = "\xC2\xB7";
         }
         // Deferred to the first real (non-whitespace) character in characterData() - the <li>'s actual text
         // may be nested inside its own block (e.g. <li><p>text</p></li>), and creating the marker here would
         // place it at a Y the nested block hasn't reached yet.
         self->pendingListMarker_ = showBullet;
-        self->listMarkerIndentPx_ = 0;
+        ListItemIndent itemIndent;
+        itemIndent.depth = self->depth;
         if (showBullet) {
           // The marker is a standalone element (like a drop cap), not a word in the text flow - an inline
           // x-offset only nudges *rendering*, it doesn't shrink the width the layout reserves for that word,
@@ -1928,10 +1973,19 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
           // (the current margin), then push every line of the item - first line included - in by the marker's
           // width, so the marker floats in that reclaimed space to the left of text that's uniformly indented.
           self->pendingListMarkerX_ = static_cast<int16_t>(self->activeBlockContentX());
-          self->listMarkerIndentPx_ = std::max(1, self->renderer.text.getLineHeight(self->activeBlockFontId()));
-          self->currentCssInsetLeftPx += self->listMarkerIndentPx_;
+          const int fontId = self->activeBlockFontId();
+          itemIndent.px = std::max(1, self->renderer.text.getLineHeight(fontId));
+          if (ordered) {
+            // Reserve room for two digits so items 1-99 line up; longer numbers widen their own item only.
+            const int numberWidth =
+                std::max(self->renderer.text.getWidth(fontId, "00."),
+                         self->renderer.text.getWidth(fontId, self->pendingListMarkerText_.c_str()));
+            itemIndent.px = std::max(itemIndent.px, numberWidth + self->renderer.text.getSpaceWidth(fontId));
+          }
+          self->currentCssInsetLeftPx += itemIndent.px;
           self->captureCurrentTextBlockBox();
         }
+        self->listItemIndents_.push_back(itemIndent);
       }
     }
   }
@@ -2018,8 +2072,8 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       // marker word) started further left. The item's actual text starts directly at the hanging-indented
       // margin (see listMarkerIndentPx_ above), with nothing preceding it in the flow.
       if (!self->currentPage) self->currentPage.reset(new Page());
-      self->currentPage->elements.emplace_back(
-          new PageListMarker("\xC2\xB7", self->pendingListMarkerX_, self->currentPageNextY, self->activeBlockFontId()));
+      self->currentPage->elements.emplace_back(new PageListMarker(
+          self->pendingListMarkerText_, self->pendingListMarkerX_, self->currentPageNextY, self->activeBlockFontId()));
     }
 
     if (!self->inDropCap && self->partWordBufferIndex >= MAX_WORD_SIZE) {
@@ -2054,11 +2108,20 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
 void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* name) {
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
 
+  // Skipped content pushed nothing in startElement(); only the depth bookkeeping needs undoing.
+  if (!self->imagePrefetchPassOnly_ && self->skipUntilDepth < self->depth) {
+    self->depth -= 1;
+    if (self->skipUntilDepth == self->depth) self->skipUntilDepth = INT_MAX;
+    return;
+  }
+
   if (strcmp(name, "li") == 0) {
     // Drop an unconsumed marker (e.g. an empty <li></li>) so it doesn't bleed into whatever follows.
     self->pendingListMarker_ = false;
-    self->currentCssInsetLeftPx -= self->listMarkerIndentPx_;
-    self->listMarkerIndentPx_ = 0;
+    if (!self->listItemIndents_.empty() && self->listItemIndents_.back().depth == self->depth - 1) {
+      self->currentCssInsetLeftPx -= self->listItemIndents_.back().px;
+      self->listItemIndents_.pop_back();
+    }
   }
 
   if (self->imagePrefetchPassOnly_) {
@@ -2238,9 +2301,8 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   if (!self->cssDisplayBlockDepths.empty() && self->cssDisplayBlockDepths.back() == self->depth) {
     self->cssDisplayBlockDepths.pop_back();
   }
-  if (!self->ulBulletVisibleDepths.empty() && self->ulBulletVisibleDepths.back() == self->depth) {
-    self->ulBulletVisibleStack.pop_back();
-    self->ulBulletVisibleDepths.pop_back();
+  if (!self->listScopes_.empty() && self->listScopes_.back().depth == self->depth) {
+    self->listScopes_.pop_back();
   }
   if (!self->listNoIndentDepths_.empty() && self->listNoIndentDepths_.back() == self->depth) {
     self->listNoIndentDepths_.pop_back();
@@ -2833,8 +2895,8 @@ bool ChapterHtmlSlimParser::parseAndBuildPages(bool skipImageProcessing) {
   currentBlockContentStartY = 0;
   currentBlockFontId = -1;
   cssDisplayBlockDepths.clear();
-  ulBulletVisibleStack.clear();
-  ulBulletVisibleDepths.clear();
+  listScopes_.clear();
+  listItemIndents_.clear();
   listNoIndentDepths_.clear();
   inlineXOffsetStack.clear();
   currentInlineXOffsetPx = 0;

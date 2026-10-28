@@ -123,19 +123,31 @@ class ChapterHtmlSlimParser {
   // unconditional pop would drop an ancestor's alignment and break inheritance for later siblings.
   std::vector<int> cssAlignmentDepths;
   std::vector<int> cssDisplayBlockDepths;
-  // Whether <li> items directly inside the innermost open <ul> should draw a bullet marker, per its own
-  // list-style/list-style-type CSS (defaults to visible, matching the browser default of list-style: disc).
-  std::vector<bool> ulBulletVisibleStack;
-  std::vector<int> ulBulletVisibleDepths;
-  // Set when a <li> that should show a bullet opens; consumed as a standalone marker element (not a text
+  // The innermost open <ul>/<ol>: whether its <li> items draw a marker, per its own list-style/list-style-type
+  // CSS (defaults to visible, matching the browser default), and for <ol> the number the next item gets.
+  struct ListScope {
+    int depth = 0;
+    bool markerVisible = true;
+    bool ordered = false;
+    int nextNumber = 1;
+  };
+  std::vector<ListScope> listScopes_;
+  // Set when a <li> that should show a marker opens; consumed as a standalone marker element (not a text
   // word - see pendingListMarkerX_) in characterData() right before the first real character of the item's
   // text, wherever that text ends up nesting.
   bool pendingListMarker_ = false;
+  // The pending marker's text: a bullet, or "N." in an ordered list.
+  std::string pendingListMarkerText_;
   // Left edge (px) where the pending marker itself should be drawn - the <li>'s margin before its hanging
   // indent was added.
   int16_t pendingListMarkerX_ = 0;
-  // Hanging-indent width applied to the current <li> (0 if it has no marker), so it can be undone at </li>.
-  int listMarkerIndentPx_ = 0;
+  // Hanging-indent width applied by each open <li> (0 if it has no marker), so </li> undoes its own indent
+  // and not a nested item's.
+  struct ListItemIndent {
+    int depth = 0;
+    int px = 0;
+  };
+  std::vector<ListItemIndent> listItemIndents_;
   struct CssFontStyleScope {
     int depth = 0;
     bool bold = false;

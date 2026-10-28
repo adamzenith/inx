@@ -367,6 +367,11 @@ std::unique_ptr<PageDropCap> PageDropCap::deserialize(FsFile& file) {
 
 void PageListMarker::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset,
                             ImageRenderMode) {
+  if (text != "\xC2\xB7") {
+    // An ordered-list number ("12.") is drawn as text, top-aligned with the item's first line.
+    renderer.text.render(markerFontId, xPos + xOffset, yPos + yOffset, text.c_str());
+    return;
+  }
   // Drawn as a plain filled circle rather than a font glyph - some fonts render "." or "•" too small, too
   // faint, or positioned oddly (this reader has no dedicated bullet glyph), so a drawn shape sized off the
   // item's own font metrics is the only way to guarantee a clearly visible, correctly placed marker.

@@ -1770,7 +1770,7 @@ bool CssParser::isDisplayInlineBlock(const std::string& elementTagLower, const s
 }
 
 bool CssParser::isDisplayNone(const std::string& elementTagLower, const std::string& className, const std::string& id,
-                              const std::string& styleAttr) const {
+                              const std::string& styleAttr, const bool ignoreContextual) const {
   std::map<std::string, std::string> inlineMap;
   parseInlineStyle(styleAttr, inlineMap);
 
@@ -1778,8 +1778,10 @@ bool CssParser::isDisplayNone(const std::string& elementTagLower, const std::str
   const auto inlineDisplayIt = inlineMap.find("display");
   if (inlineDisplayIt != inlineMap.end()) {
     raw = inlineDisplayIt->second;
-  } else {
-    raw = getCascadedPropertyValue("display", className, id, styleAttr, elementTagLower);
+  } else if (const CssRule* winner =
+                 winningRuleForProperty("display", className, id, elementTagLower, ignoreContextual)) {
+    const std::string* value = rulePropertyValue(*winner, "display");
+    if (value) raw = *value;
   }
 
   raw = trimCssWs(raw);
