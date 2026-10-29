@@ -16,6 +16,7 @@
 #include "EpubAnnotationUi.h"
 #include "EpubDictionaryUi.h"
 #include "EpubReadingStats.h"
+#include "KOReaderAutoSync.h"
 #include "MenuDrawer.h"
 #include "OrientationPickerUi.h"
 #include "PresetPickerUi.h"
@@ -139,6 +140,13 @@ class EpubActivity final : public ActivityWithSubactivity {
   bool progressDirty_ = false;
   unsigned long progressDirtyAt_ = 0;
   static constexpr unsigned long kProgressSaveIdleMs = 1500;
+  /** Last saved position and the UTC time it last moved (0 when the clock was unset), for KOReader auto sync. */
+  bool hasSavedProgress_ = false;
+  int savedSpineIndex_ = -1;
+  int savedPageNumber_ = -1;
+  uint32_t progressChangedAt_ = 0;
+  /** KOReader auto sync runs once the first page is on screen. */
+  bool autoSyncOnOpenPending_ = false;
   /** The page after the one on screen, deserialized while the panel refreshes (or when a page button goes down)
    *  so the next turn can skip reading it from SD. Keyed by section generation + page number. */
   std::unique_ptr<Page> prefetchedPage_;
@@ -290,6 +298,8 @@ class EpubActivity final : public ActivityWithSubactivity {
 
   /** Opens KOReader sync as a sub-activity (from menu). */
   void openKOReaderSyncFromMenu();
+  KOReaderAutoSync::LocalState autoSyncLocalState() const;
+  void runAutoSyncOnOpen();
 
   /** Callback for MenuDrawer's integrated "Go to Percent" view. */
   void onPercentDrawerSelected(int percent);

@@ -49,6 +49,8 @@ bool KOReaderCredentialStore::saveToFile() const {
 
   serialization::writePod(file, static_cast<uint8_t>(matchMethod));
 
+  serialization::writePod(file, static_cast<uint8_t>(autoSync ? 1 : 0));
+
   file.close();
   Serial.printf("[%lu] [KRS] Saved KOReader credentials to file\n", millis());
   return true;
@@ -93,6 +95,14 @@ bool KOReaderCredentialStore::loadFromFile() {
     matchMethod = static_cast<DocumentMatchMethod>(method);
   } else {
     matchMethod = DocumentMatchMethod::FILENAME;
+  }
+
+  if (file.available()) {
+    uint8_t enabled;
+    serialization::readPod(file, enabled);
+    autoSync = enabled != 0;
+  } else {
+    autoSync = false;
   }
 
   file.close();
@@ -148,4 +158,9 @@ void KOReaderCredentialStore::setMatchMethod(DocumentMatchMethod method) {
   matchMethod = method;
   Serial.printf("[%lu] [KRS] Set match method: %s\n", millis(),
                 method == DocumentMatchMethod::FILENAME ? "Filename" : "Binary");
+}
+
+void KOReaderCredentialStore::setAutoSync(const bool enabled) {
+  autoSync = enabled;
+  Serial.printf("[%lu] [KRS] Set auto sync: %s\n", millis(), enabled ? "on" : "off");
 }

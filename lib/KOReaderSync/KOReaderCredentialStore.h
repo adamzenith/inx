@@ -25,6 +25,7 @@ class KOReaderCredentialStore {
   std::string password;
   std::string serverUrl;
   DocumentMatchMethod matchMethod = DocumentMatchMethod::FILENAME;
+  bool autoSync = false;
 
   KOReaderCredentialStore() = default;
 
@@ -59,6 +60,10 @@ class KOReaderCredentialStore {
 
   void setMatchMethod(DocumentMatchMethod method);
   DocumentMatchMethod getMatchMethod() const { return matchMethod; }
+
+  /** Sync progress automatically when an EPUB is opened or closed (including sleep and wake). */
+  void setAutoSync(bool enabled);
+  bool getAutoSync() const { return autoSync; }
 };
 
 #define KOREADER_STORE KOReaderCredentialStore::getInstance()

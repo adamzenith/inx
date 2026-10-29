@@ -20,8 +20,9 @@
 constexpr int LIST_ITEM_HEIGHT = UiTheme::DRAWER_LIST_ITEM_HEIGHT;
 
 namespace {
-constexpr int MENU_ITEMS = 5;
-const char* menuNames[MENU_ITEMS] = {"Username", "Password", "Sync Server URL", "Document Matching", "Authenticate"};
+constexpr int MENU_ITEMS = 6;
+const char* menuNames[MENU_ITEMS] = {"Username",          "Password",  "Sync Server URL",
+                                     "Document Matching", "Auto Sync", "Authenticate"};
 }  // namespace
 
 void KOReaderSettingsActivity::taskTrampoline(void* param) {
@@ -132,6 +133,10 @@ void KOReaderSettingsActivity::handleSelection() {
     KOREADER_STORE.saveToFile();
     updateRequired = true;
   } else if (selectedIndex == 4) {
+    KOREADER_STORE.setAutoSync(!KOREADER_STORE.getAutoSync());
+    KOREADER_STORE.saveToFile();
+    updateRequired = true;
+  } else if (selectedIndex == 5) {
     if (!KOREADER_STORE.hasCredentials()) {
       xSemaphoreGive(renderingMutex);
       return;
@@ -191,6 +196,8 @@ void KOReaderSettingsActivity::render() {
       } else if (i == 3) {
         status = KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::FILENAME ? "Filename" : "Binary";
       } else if (i == 4) {
+        status = KOREADER_STORE.getAutoSync() ? "On" : "Off";
+      } else if (i == 5) {
         status = KOREADER_STORE.hasCredentials() ? "" : "Set credentials first";
       }
 
@@ -200,7 +207,7 @@ void KOReaderSettingsActivity::render() {
                              !isSelected);
       }
 
-      if (i != 3) {
+      if (i != 3 && i != 4) {
         renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, screenWidth - 25, textY, "›", !isSelected);
       }
 

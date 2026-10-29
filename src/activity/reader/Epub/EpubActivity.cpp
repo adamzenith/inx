@@ -28,6 +28,7 @@
 
 #include "EpubAnnotations.h"
 #include "EpubReadingStats.h"
+#include "KOReaderAutoSync.h"
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
 #include "MenuDrawer.h"
@@ -548,6 +549,11 @@ void EpubActivity::loadProgress() {
     nextPageNumber = data.pageNumber;
     cachedSpineIndex = currentSpineIndex;
     cachedChapterTotalPageCount = data.chapterPageCount;
+    hasSavedProgress_ = true;
+    savedSpineIndex_ = data.spineIndex;
+    savedPageNumber_ = data.pageNumber;
+    // Older builds stored millis() here, which never passes for a wall-clock time
+    progressChangedAt_ = data.lastReadTimestamp >= KOReaderAutoSync::MIN_WALL_CLOCK ? data.lastReadTimestamp : 0;
   } else {
     bookProgress->remove();
     currentSpineIndex = 0;
@@ -572,7 +578,13 @@ void EpubActivity::saveProgress(int spineIndex, int currentPage, int pageCount, 
   data.spineIndex = spineIndex;
   data.pageNumber = currentPage;
   data.chapterPageCount = pageCount;
-  data.lastReadTimestamp = millis();
+  if (!hasSavedProgress_ || spineIndex != savedSpineIndex_ || currentPage != savedPageNumber_) {
+    hasSavedProgress_ = true;
+    savedSpineIndex_ = spineIndex;
+    savedPageNumber_ = currentPage;
+    progressChangedAt_ = KOReaderAutoSync::wallClockNow();
+  }
+  data.lastReadTimestamp = progressChangedAt_;
 
   progressDirty_ = false;
 
@@ -863,6 +875,8 @@ void EpubActivity::onEnter() {
   pendingPreloadSpine_ = -1;
 
   annUi_.clearSessionAndCapture();
+
+  autoSyncOnOpenPending_ = KOReaderAutoSync::isEnabled();
 }
 
 bool EpubActivity::preventAutoSleep() { return gpio.deviceIsX3() && SETTINGS.shakePageTurn != 0; }
@@ -889,6 +903,8 @@ void EpubActivity::onExit() {
     endPageTimer();
   }
 
+  bool autoSyncOnClose = false;
+  KOReaderAutoSync::LocalState autoSyncState;
   if (epub) {
     saveBookStats();
 
@@ -899,6 +915,15 @@ void EpubActivity::onExit() {
                            bookProgressValue);
 
       saveProgress(currentSpineIndex, section->currentPage, section->pageCount, false);
+
+      autoSyncState = autoSyncLocalState();
+      const std::shared_ptr<Epub> epubView(epub.get(), [](Epub*) {});
+      autoSyncOnClose = KOReaderAutoSync::isEnabled() &&
+                        KOReaderAutoSync::hasUnsyncedChanges(epubView, autoSyncState) &&
+                        KOReaderAutoSync::connectToSavedWifi();
+      if (autoSyncOnClose) {
+        ScreenComponents::drawPopup(renderer, "Syncing progress...");
+      }
     }
   }
 
@@ -912,6 +937,11 @@ void EpubActivity::onExit() {
   section.reset();
   bookProgress.reset();
   statusBar.reset();
+  if (autoSyncOnClose) {
+    // Free the reader's fonts before the TLS handshake needs the heap
+    FontManager::unloadAllSDFonts();
+    KOReaderAutoSync::syncOnClose(std::shared_ptr<Epub>(epub.get(), [](Epub*) {}), autoSyncState);
+  }
   epub.reset();
 
   renderer.resetTransientReaderState();
@@ -929,6 +959,11 @@ void EpubActivity::loop() {
 
   if (subActivity) {
     subActivity->loop();
+    return;
+  }
+
+  if (autoSyncOnOpenPending_ && !updateRequired) {
+    runAutoSyncOnOpen();
     return;
   }
 
@@ -1614,6 +1649,48 @@ void EpubActivity::regenerateThumbnail() {
   readerPopup(ok ? "Thumbnail updated" : "Thumbnail failed");
   renderer.displayBuffer();
   vTaskDelay(pdMS_TO_TICKS(ok ? 800 : 1200));
+
+  updateRequired = true;
+  startPageTimer();
+}
+
+KOReaderAutoSync::LocalState EpubActivity::autoSyncLocalState() const {
+  KOReaderAutoSync::LocalState local;
+  local.spineIndex = currentSpineIndex;
+  local.pageNumber = section ? section->currentPage : nextPageNumber;
+  local.totalPagesInSpine = section && section->pageCount > 0 ? section->pageCount : 1;
+  local.hasProgress = hasSavedProgress_;
+  local.changedAt = progressChangedAt_;
+  return local;
+}
+
+/**
+ * @brief Pulls or pushes KOReader progress once the book's first page is on screen
+ */
+void EpubActivity::runAutoSyncOnOpen() {
+  autoSyncOnOpenPending_ = false;
+  if (!epub || !section) {
+    return;
+  }
+
+  // Only a saved network in range gets this far: otherwise the reader carries on untouched
+  if (!KOReaderAutoSync::connectToSavedWifi()) {
+    return;
+  }
+
+  const KOReaderAutoSync::LocalState local = autoSyncLocalState();
+  readerPopup("Syncing progress...");
+  nextPageNumber = local.pageNumber;
+  section.reset();
+  FontManager::unloadAllSDFonts();
+
+  PagePosition remote{};
+  const auto result =
+      KOReaderAutoSync::syncOnOpen(std::shared_ptr<Epub>(epub.get(), [](Epub*) {}), local, remote);
+  if (result == KOReaderAutoSync::Result::PULLED) {
+    currentSpineIndex = remote.spineIndex;
+    nextPageNumber = remote.pageNumber;
+  }
 
   updateRequired = true;
   startPageTimer();
